@@ -1,0 +1,130 @@
+version: 2
+
+project_name: swg
+
+before:
+  hooks:
+    - go mod tidy
+    - go generate ./...
+
+builds:
+  - id: swg
+    main: ./cmd
+    binary: swg
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+      - -X main.date={{.Date}}
+
+archives:
+  - id: default
+    format: tar.gz
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end }}
+    format_overrides:
+      - goos: windows
+        format: zip
+    files:
+      - README.md
+      - LICENSE*
+
+checksum:
+  name_template: 'checksums.txt'
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^ci:'
+      - Merge pull request
+      - Merge branch
+
+brews:
+  - name: swg
+    repository:
+      owner: acmacalister
+      name: homebrew-tap
+    directory: Formula
+    homepage: https://github.com/acmacalister/swg
+    description: Secure Web Gateway - HTTPS MITM proxy for content filtering
+    license: MIT
+    test: |
+      system "#{bin}/swg", "--help"
+    install: |
+      bin.install "swg"
+
+nfpms:
+  - id: packages
+    package_name: swg
+    vendor: acmacalister
+    homepage: https://github.com/acmacalister/swg
+    maintainer: Austin Cherry <austincherry@me.com>
+    description: Secure Web Gateway - HTTPS MITM proxy for content filtering
+    license: MIT
+    formats:
+      - deb
+      - rpm
+      - apk
+      - archlinux
+    bindir: /usr/bin
+    contents:
+      - src: ./README.md
+        dst: /usr/share/doc/swg/README.md
+    deb:
+      lintian_overrides:
+        - statically-linked-binary
+        - changelog-file-missing-in-native-package
+
+aurs:
+  - name: swg-bin
+    homepage: https://github.com/acmacalister/swg
+    description: Secure Web Gateway - HTTPS MITM proxy for content filtering
+    maintainers:
+      - Austin Cherry <austincherry@me.com>
+    license: MIT
+    private_key: '{{ .Env.AUR_KEY }}'
+    git_url: 'ssh://aur@aur.archlinux.org/swg-bin.git'
+    package: |-
+      install -Dm755 "./swg" "${pkgdir}/usr/bin/swg"
+      install -Dm644 "./README.md" "${pkgdir}/usr/share/doc/swg/README.md"
+
+dockers:
+  - image_templates:
+      - "ghcr.io/acmacalister/swg:{{ .Tag }}"
+      - "ghcr.io/acmacalister/swg:latest"
+    dockerfile: Dockerfile
+    build_flag_templates:
+      - "--pull"
+      - "--label=org.opencontainers.image.created={{.Date}}"
+      - "--label=org.opencontainers.image.title={{.ProjectName}}"
+      - "--label=org.opencontainers.image.revision={{.FullCommit}}"
+      - "--label=org.opencontainers.image.version={{.Version}}"
+      - "--platform=linux/amd64"
+    skip_push: auto
+
+release:
+  github:
+    owner: acmacalister
+    name: swg
+  draft: false
+  prerelease: auto
+  name_template: "{{.ProjectName}} v{{.Version}}"

@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: swg
+  labels:
+    app.kubernetes.io/name: swg
+    app.kubernetes.io/component: proxy

@@ -1,0 +1,448 @@
+package swg
+
+import (
+	"bufio"
+	"context"
+	"crypto/tls"
+	"fmt"
+	"io"
+	"log/slog"
+	"net"
+	"net/http"
+	"net/url"
+	"strings"
+	"sync"
+	"time"
+)
+
+// Proxy is an HTTPS MITM proxy that intercepts TLS traffic for content filtering.
+type Proxy struct {
+	// Addr is the address to listen on (e.g., ":8080")
+	Addr string
+
+	// CertManager handles dynamic certificate generation
+	CertManager *CertManager
+
+	// Filter determines whether requests should be blocked
+	Filter Filter
+
+	// BlockPageURL is the URL to redirect blocked requests to (optional)
+	BlockPageURL string
+
+	// BlockPage is a custom block page template (optional, uses default if nil)
+	BlockPage *BlockPage
+
+	// Logger for proxy events
+	Logger *slog.Logger
+
+	// Transport for outbound requests (optional, uses default if nil)
+	Transport http.RoundTripper
+
+	listener net.Listener
+	srv      *http.Server
+}
+
+// Filter determines whether a request should be blocked.
+type Filter interface {
+	// ShouldBlock returns true if the request should be blocked, along with a reason.
+	ShouldBlock(req *http.Request) (blocked bool, reason string)
+}
+
+// FilterFunc is a function adapter for Filter.
+type FilterFunc func(req *http.Request) (blocked bool, reason string)
+
+func (f FilterFunc) ShouldBlock(req *http.Request) (bool, string) {
+	return f(req)
+}
+
+// NewProxy creates a new HTTPS MITM proxy.
+func NewProxy(addr string, cm *CertManager) *Proxy {
+	return &Proxy{
+		Addr:        addr,
+		CertManager: cm,
+		Logger:      slog.Default(),
+		Transport:   http.DefaultTransport,
+	}
+}
+
+// ListenAndServe starts the proxy server.
+func (p *Proxy) ListenAndServe() error {
+	listener, err := net.Listen("tcp", p.Addr)
+	if err != nil {
+		return fmt.Errorf("listen: %w", err)
+	}
+	p.listener = listener
+
+	p.srv = &http.Server{
+		Handler: p,
+	}
+
+	p.Logger.Info("proxy listening", "addr", p.Addr)
+	return p.srv.Serve(listener)
+}
+
+// Shutdown gracefully stops the proxy.
+func (p *Proxy) Shutdown(ctx context.Context) error {
+	if p.srv != nil {
+		return p.srv.Shutdown(ctx)
+	}
+	return nil
+}
+
+// ServeHTTP handles incoming proxy requests.
+func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodConnect {
+		p.handleConnect(w, r)
+	} else {
+		p.handleHTTP(w, r)
+	}
+}
+
+// handleConnect handles HTTPS CONNECT requests (MITM interception).
+func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
+	p.Logger.Debug("CONNECT", "host", r.Host)
+
+	// Hijack the connection
+	hijacker, ok := w.(http.Hijacker)
+	if !ok {
+		http.Error(w, "hijacking not supported", http.StatusInternalServerError)
+		return
+	}
+
+	clientConn, _, err := hijacker.Hijack()
+	if err != nil {
+		p.Logger.Error("hijack failed", "error", err)
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+
+	// Send 200 Connection Established to client
+	_, err = clientConn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
+	if err != nil {
+		p.Logger.Error("write connect response", "error", err)
+		clientConn.Close()
+		return
+	}
+
+	// Get hostname for certificate generation
+	host := r.Host
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+
+	// Create TLS config with dynamic cert generation
+	tlsConfig := &tls.Config{
+		GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+			// Use SNI if available, otherwise use the CONNECT host
+			h := hello.ServerName
+			if h == "" {
+				h = host
+			}
+			return p.CertManager.GetCertificateForHost(h)
+		},
+	}
+
+	// Wrap client connection with TLS (server side - we're pretending to be the target)
+	tlsClientConn := tls.Server(clientConn, tlsConfig)
+	if err := tlsClientConn.Handshake(); err != nil {
+		p.Logger.Error("TLS handshake with client", "error", err, "host", host)
+		clientConn.Close()
+		return
+	}
+
+	// Handle HTTP requests over the TLS connection
+	p.handleTLSConnection(tlsClientConn, host)
+}
+
+// handleTLSConnection reads HTTP requests from the TLS connection and processes them.
+func (p *Proxy) handleTLSConnection(conn *tls.Conn, defaultHost string) {
+	defer conn.Close()
+
+	reader := bufio.NewReader(conn)
+
+	for {
+		// Set read deadline
+		conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+
+		req, err := http.ReadRequest(reader)
+		if err != nil {
+			if err != io.EOF {
+				p.Logger.Debug("read request", "error", err)
+			}
+			return
+		}
+
+		// Ensure the request has the proper host/URL
+		if req.URL.Host == "" {
+			req.URL.Host = defaultHost
+		}
+		if req.URL.Scheme == "" {
+			req.URL.Scheme = "https"
+		}
+		if req.Host == "" {
+			req.Host = defaultHost
+		}
+
+		// Check filter
+		if p.Filter != nil {
+			if blocked, reason := p.Filter.ShouldBlock(req); blocked {
+				p.Logger.Info("blocked", "host", req.Host, "path", req.URL.Path, "reason", reason)
+				p.writeBlockResponse(conn, req, reason)
+				continue
+			}
+		}
+
+		// Forward the request
+		resp, err := p.forwardRequest(req)
+		if err != nil {
+			p.Logger.Error("forward request", "error", err, "url", req.URL)
+			p.writeErrorResponse(conn, err)
+			continue
+		}
+
+		// Write response back to client
+		err = resp.Write(conn)
+		resp.Body.Close()
+		if err != nil {
+			p.Logger.Debug("write response", "error", err)
+			return
+		}
+	}
+}
+
+// forwardRequest sends the request to the actual server.
+func (p *Proxy) forwardRequest(req *http.Request) (*http.Response, error) {
+	// Clone the request for forwarding
+	outReq := req.Clone(req.Context())
+
+	// Remove hop-by-hop headers
+	removeHopByHopHeaders(outReq.Header)
+
+	transport := p.Transport
+	if transport == nil {
+		transport = http.DefaultTransport
+	}
+
+	return transport.RoundTrip(outReq)
+}
+
+// writeBlockResponse writes a block page response.
+func (p *Proxy) writeBlockResponse(w io.Writer, req *http.Request, reason string) {
+	var resp *http.Response
+
+	if p.BlockPageURL != "" {
+		// Redirect to block page
+		blockURL, _ := url.Parse(p.BlockPageURL)
+		q := blockURL.Query()
+		q.Set("url", req.URL.String())
+		q.Set("reason", reason)
+		blockURL.RawQuery = q.Encode()
+
+		resp = &http.Response{
+			StatusCode: http.StatusFound,
+			ProtoMajor: 1,
+			ProtoMinor: 1,
+			Header: http.Header{
+				"Location":     {blockURL.String()},
+				"Content-Type": {"text/html"},
+			},
+			Body: io.NopCloser(strings.NewReader(
+				fmt.Sprintf(`<html><body>Redirecting to <a href="%s">block page</a>...</body></html>`, blockURL.String()),
+			)),
+		}
+	} else {
+		// Use custom block page or default
+		blockPage := p.BlockPage
+		if blockPage == nil {
+			blockPage = NewBlockPage()
+		}
+
+		host := req.Host
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			host = h
+		}
+
+		data := BlockPageData{
+			URL:       req.URL.String(),
+			Host:      host,
+			Path:      req.URL.Path,
+			Reason:    reason,
+			Timestamp: time.Now().Format(time.RFC1123),
+		}
+
+		body, _ := blockPage.RenderString(data)
+
+		resp = &http.Response{
+			StatusCode:    http.StatusForbidden,
+			ProtoMajor:    1,
+			ProtoMinor:    1,
+			Header:        http.Header{"Content-Type": {"text/html; charset=utf-8"}},
+			Body:          io.NopCloser(strings.NewReader(body)),
+			ContentLength: int64(len(body)),
+		}
+	}
+
+	resp.Write(w)
+}
+
+// writeErrorResponse writes an error response.
+func (p *Proxy) writeErrorResponse(w io.Writer, err error) {
+	body := fmt.Sprintf("Proxy Error: %v", err)
+	resp := &http.Response{
+		StatusCode:    http.StatusBadGateway,
+		ProtoMajor:    1,
+		ProtoMinor:    1,
+		Header:        http.Header{"Content-Type": {"text/plain"}},
+		Body:          io.NopCloser(strings.NewReader(body)),
+		ContentLength: int64(len(body)),
+	}
+	resp.Write(w)
+}
+
+// handleHTTP handles plain HTTP requests (non-CONNECT).
+func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
+	p.Logger.Debug("HTTP", "method", r.Method, "url", r.URL)
+
+	// Check filter
+	if p.Filter != nil {
+		if blocked, reason := p.Filter.ShouldBlock(r); blocked {
+			p.Logger.Info("blocked", "url", r.URL, "reason", reason)
+			if p.BlockPageURL != "" {
+				blockURL, _ := url.Parse(p.BlockPageURL)
+				q := blockURL.Query()
+				q.Set("url", r.URL.String())
+				q.Set("reason", reason)
+				blockURL.RawQuery = q.Encode()
+				http.Redirect(w, r, blockURL.String(), http.StatusFound)
+			} else {
+				// Use custom block page or default
+				blockPage := p.BlockPage
+				if blockPage == nil {
+					blockPage = NewBlockPage()
+				}
+
+				host := r.Host
+				if h, _, err := net.SplitHostPort(host); err == nil {
+					host = h
+				}
+
+				data := BlockPageData{
+					URL:       r.URL.String(),
+					Host:      host,
+					Path:      r.URL.Path,
+					Reason:    reason,
+					Timestamp: time.Now().Format(time.RFC1123),
+				}
+
+				w.Header().Set("Content-Type", "text/html; charset=utf-8")
+				w.WriteHeader(http.StatusForbidden)
+				blockPage.Render(w, data)
+			}
+			return
+		}
+	}
+
+	// Forward the request
+	outReq := r.Clone(r.Context())
+	removeHopByHopHeaders(outReq.Header)
+
+	transport := p.Transport
+	if transport == nil {
+		transport = http.DefaultTransport
+	}
+
+	resp, err := transport.RoundTrip(outReq)
+	if err != nil {
+		p.Logger.Error("forward request", "error", err, "url", r.URL)
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+
+	// Copy response headers
+	for k, vv := range resp.Header {
+		for _, v := range vv {
+			w.Header().Add(k, v)
+		}
+	}
+	w.WriteHeader(resp.StatusCode)
+	io.Copy(w, resp.Body)
+}
+
+// Hop-by-hop headers that should not be forwarded
+var hopByHopHeaders = []string{
+	"Connection",
+	"Keep-Alive",
+	"Proxy-Authenticate",
+	"Proxy-Authorization",
+	"Te",
+	"Trailers",
+	"Transfer-Encoding",
+	"Upgrade",
+}
+
+func removeHopByHopHeaders(h http.Header) {
+	for _, header := range hopByHopHeaders {
+		h.Del(header)
+	}
+}
+
+// DomainFilter is a simple filter that blocks requests to specific domains.
+type DomainFilter struct {
+	mu       sync.RWMutex
+	blocked  map[string]bool
+	patterns []string // wildcard patterns like "*.ads.com"
+}
+
+// NewDomainFilter creates a new domain-based filter.
+func NewDomainFilter() *DomainFilter {
+	return &DomainFilter{
+		blocked: make(map[string]bool),
+	}
+}
+
+// AddDomain adds a domain to the blocklist.
+// Supports wildcards: "*.example.com" blocks all subdomains.
+func (f *DomainFilter) AddDomain(domain string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if strings.HasPrefix(domain, "*.") {
+		f.patterns = append(f.patterns, domain[2:]) // Store without "*."
+	} else {
+		f.blocked[strings.ToLower(domain)] = true
+	}
+}
+
+// AddDomains adds multiple domains to the blocklist.
+func (f *DomainFilter) AddDomains(domains []string) {
+	for _, d := range domains {
+		f.AddDomain(d)
+	}
+}
+
+// ShouldBlock implements Filter.
+func (f *DomainFilter) ShouldBlock(req *http.Request) (bool, string) {
+	host := req.Host
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	host = strings.ToLower(host)
+
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+
+	// Check exact match
+	if f.blocked[host] {
+		return true, "domain blocked"
+	}
+
+	// Check wildcard patterns
+	for _, pattern := range f.patterns {
+		if host == pattern || strings.HasSuffix(host, "."+pattern) {
+			return true, "domain blocked (wildcard)"
+		}
+	}
+
+	return false, ""
+}

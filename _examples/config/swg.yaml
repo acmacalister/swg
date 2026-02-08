@@ -1,0 +1,87 @@
+# SWG - Secure Web Gateway Configuration
+# See https://github.com/acmacalister/swg for documentation
+
+server:
+  # Address to listen on
+  addr: ":8080"
+  
+  # Timeouts
+  read_timeout: 30s
+  write_timeout: 30s
+  idle_timeout: 60s
+
+tls:
+  # CA certificate and key paths
+  ca_cert: "ca.crt"
+  ca_key: "ca.key"
+  
+  # Organization name for generated certificates
+  organization: "SWG Proxy"
+  
+  # Validity period for generated host certificates
+  cert_validity_days: 365
+
+filter:
+  # Enable/disable filtering
+  enabled: true
+  
+  # Simple domain blocklist
+  domains:
+    - "ads.example.com"
+    - "*.tracking.com"
+    - "malware.bad.com"
+  
+  # URL prefix blocklist
+  urls:
+    - "https://phishing.example.com/login"
+    - "http://spam.com/offers"
+  
+  # Regex patterns
+  regex:
+    - ".*\\.doubleclick\\.net.*"
+    - ".*analytics.*\\.js$"
+  
+  # Full rule definitions with metadata
+  rules:
+    - type: domain
+      pattern: "suspicious.com"
+      reason: "suspicious activity detected"
+      category: security
+    
+    - type: url
+      pattern: "https://untrusted.com/download"
+      reason: "untrusted download source"
+      category: security
+  
+  # External rule sources
+  sources:
+    - type: csv
+      path: "/etc/swg/blocklist.csv"
+      has_header: true
+    
+    # - type: url
+    #   url: "https://blocklist.example.com/rules.csv"
+    #   has_header: true
+  
+  # Auto-reload interval for external sources
+  reload_interval: 5m
+
+block_page:
+  # Enable custom block page
+  enabled: true
+  
+  # Redirect to external block page (optional)
+  # redirect_url: "https://internal.company.com/blocked"
+  
+  # Custom template file (optional)
+  # template_path: "/etc/swg/block.html"
+
+logging:
+  # Log level: debug, info, warn, error
+  level: "info"
+  
+  # Log format: text, json
+  format: "text"
+  
+  # Output: stdout, stderr, or file path
+  output: "stderr"

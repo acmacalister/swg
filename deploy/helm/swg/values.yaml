@@ -1,0 +1,101 @@
+# Default values for swg.
+
+replicaCount: 2
+
+image:
+  repository: ghcr.io/acmacalister/swg
+  pullPolicy: IfNotPresent
+  tag: ""  # Defaults to appVersion
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65534
+  fsGroup: 65534
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+service:
+  type: ClusterIP
+  port: 8080
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: '{{ include "swg.name" . }}'
+          topologyKey: kubernetes.io/hostname
+
+# SWG configuration
+config:
+  server:
+    addr: ":8080"
+    readTimeout: 30s
+    writeTimeout: 30s
+    idleTimeout: 60s
+  
+  tls:
+    caCert: "/etc/swg/certs/ca.crt"
+    caKey: "/etc/swg/certs/ca.key"
+    organization: "SWG Proxy"
+    certValidityDays: 365
+  
+  filter:
+    enabled: true
+    domains: []
+    urls: []
+    regex: []
+    rules: []
+    sources: []
+    reloadInterval: 5m
+  
+  blockPage:
+    enabled: true
+    redirectUrl: ""
+    templatePath: ""
+  
+  logging:
+    level: "info"
+    format: "json"
+    output: "stderr"
+
+# CA certificate secret
+# Create with: kubectl create secret generic swg-ca-cert --from-file=ca.crt --from-file=ca.key
+caSecret:
+  name: "swg-ca-cert"
+  # Set to true to create the secret (provide base64 encoded values)
+  create: false
+  # Base64-encoded CA certificate
+  caCrt: ""
+  # Base64-encoded CA private key
+  caKey: ""

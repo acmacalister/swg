@@ -1,0 +1,19 @@
+apiVersion: v2
+name: swg
+description: Secure Web Gateway - HTTPS MITM proxy for content filtering
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - proxy
+  - https
+  - mitm
+  - security
+  - filtering
+  - gateway
+home: https://github.com/acmacalister/swg
+sources:
+  - https://github.com/acmacalister/swg
+maintainers:
+  - name: Austin Cherry
+    email: austincherry@me.com

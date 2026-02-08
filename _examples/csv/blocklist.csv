@@ -1,0 +1,8 @@
+type,pattern,reason,category
+domain,ads.example.com,advertising content,ads
+domain,*.tracking.com,user tracking,analytics
+domain,malware.bad.com,known malware host,security
+url,https://phishing.example.com/login,phishing attempt,security
+url,http://spam.com/offers,spam content,spam
+regex,.*\.doubleclick\.net.*,advertising tracker,ads
+regex,.*analytics.*\.js$,analytics script,analytics

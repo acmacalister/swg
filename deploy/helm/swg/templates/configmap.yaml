@@ -1,0 +1,57 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "swg.fullname" . }}-config
+  labels:
+    {{- include "swg.labels" . | nindent 4 }}
+data:
+  swg.yaml: |
+    server:
+      addr: {{ .Values.config.server.addr | quote }}
+      read_timeout: {{ .Values.config.server.readTimeout }}
+      write_timeout: {{ .Values.config.server.writeTimeout }}
+      idle_timeout: {{ .Values.config.server.idleTimeout }}
+
+    tls:
+      ca_cert: {{ .Values.config.tls.caCert | quote }}
+      ca_key: {{ .Values.config.tls.caKey | quote }}
+      organization: {{ .Values.config.tls.organization | quote }}
+      cert_validity_days: {{ .Values.config.tls.certValidityDays }}
+
+    filter:
+      enabled: {{ .Values.config.filter.enabled }}
+      {{- if .Values.config.filter.domains }}
+      domains:
+        {{- toYaml .Values.config.filter.domains | nindent 8 }}
+      {{- end }}
+      {{- if .Values.config.filter.urls }}
+      urls:
+        {{- toYaml .Values.config.filter.urls | nindent 8 }}
+      {{- end }}
+      {{- if .Values.config.filter.regex }}
+      regex:
+        {{- toYaml .Values.config.filter.regex | nindent 8 }}
+      {{- end }}
+      {{- if .Values.config.filter.rules }}
+      rules:
+        {{- toYaml .Values.config.filter.rules | nindent 8 }}
+      {{- end }}
+      {{- if .Values.config.filter.sources }}
+      sources:
+        {{- toYaml .Values.config.filter.sources | nindent 8 }}
+      {{- end }}
+      reload_interval: {{ .Values.config.filter.reloadInterval }}
+
+    block_page:
+      enabled: {{ .Values.config.blockPage.enabled }}
+      {{- if .Values.config.blockPage.redirectUrl }}
+      redirect_url: {{ .Values.config.blockPage.redirectUrl | quote }}
+      {{- end }}
+      {{- if .Values.config.blockPage.templatePath }}
+      template_path: {{ .Values.config.blockPage.templatePath | quote }}
+      {{- end }}
+
+    logging:
+      level: {{ .Values.config.logging.level | quote }}
+      format: {{ .Values.config.logging.format | quote }}
+      output: {{ .Values.config.logging.output | quote }}
