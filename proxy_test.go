@@ -117,7 +117,7 @@ func TestProxy_HandleHTTP(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Test", "passed")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("Hello from backend"))
+		_, _ = w.Write([]byte("Hello from backend"))
 	}))
 	defer backend.Close()
 
@@ -248,7 +248,7 @@ func TestRemoveHopByHopHeaders(t *testing.T) {
 func TestProxy_Integration(t *testing.T) {
 	// Create test backend
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, "Backend received: %s %s", r.Method, r.URL.Path)
+		_, _ = fmt.Fprintf(w, "Backend received: %s %s", r.Method, r.URL.Path)
 	}))
 	defer backend.Close()
 
@@ -265,8 +265,8 @@ func TestProxy_Integration(t *testing.T) {
 		t.Fatalf("failed to create listener: %v", err)
 	}
 
-	go http.Serve(listener, proxy)
-	defer listener.Close()
+	go func() { _ = http.Serve(listener, proxy) }()
+	defer func() { _ = listener.Close() }()
 
 	proxyAddr := listener.Addr().String()
 
@@ -283,7 +283,7 @@ func TestProxy_Integration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("request through proxy failed: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, _ := io.ReadAll(resp.Body)
 	expected := "Backend received: GET /test/path"
@@ -306,8 +306,8 @@ func TestProxy_HTTPS_CONNECT(t *testing.T) {
 		t.Fatalf("failed to create listener: %v", err)
 	}
 
-	go http.Serve(listener, proxy)
-	defer listener.Close()
+	go func() { _ = http.Serve(listener, proxy) }()
+	defer func() { _ = listener.Close() }()
 
 	proxyAddr := listener.Addr().String()
 
@@ -316,10 +316,10 @@ func TestProxy_HTTPS_CONNECT(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to connect to proxy: %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	// Send CONNECT request
-	fmt.Fprintf(conn, "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n")
+	_, _ = fmt.Fprintf(conn, "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n")
 
 	// Read response
 	reader := bufio.NewReader(conn)
@@ -442,11 +442,11 @@ func BenchmarkCertManager_GetCertificateForHost(b *testing.B) {
 	cm, _ := NewCertManagerFromPEM(certPEM, keyPEM)
 
 	// Pre-warm the cache
-	cm.GetCertificateForHost("cached.example.com")
+	_, _ = cm.GetCertificateForHost("cached.example.com")
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		cm.GetCertificateForHost("cached.example.com")
+		_, _ = cm.GetCertificateForHost("cached.example.com")
 	}
 }
 
@@ -456,7 +456,7 @@ func BenchmarkCertManager_GetCertificateForHost_Uncached(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		cm.GetCertificateForHost(fmt.Sprintf("host%d.example.com", i))
+		_, _ = cm.GetCertificateForHost(fmt.Sprintf("host%d.example.com", i))
 	}
 }
 
@@ -465,7 +465,7 @@ func TestProxy_TLSInterception(t *testing.T) {
 	// Create HTTPS backend
 	backend := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("secure response"))
+		_, _ = w.Write([]byte("secure response"))
 	}))
 	defer backend.Close()
 
@@ -489,8 +489,8 @@ func TestProxy_TLSInterception(t *testing.T) {
 		t.Fatalf("failed to create listener: %v", err)
 	}
 
-	go http.Serve(listener, proxy)
-	defer listener.Close()
+	go func() { _ = http.Serve(listener, proxy) }()
+	defer func() { _ = listener.Close() }()
 
 	// The full MITM test requires client to trust our CA
 	// For unit tests, we verify the proxy handles CONNECT properly

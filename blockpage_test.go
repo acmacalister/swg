@@ -183,6 +183,6 @@ func BenchmarkBlockPage_RenderString(b *testing.B) {
 
 	b.ResetTimer()
 	for b.Loop() {
-		bp.RenderString(data)
+		_, _ = bp.RenderString(data)
 	}
 }

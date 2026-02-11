@@ -30,6 +30,9 @@ func main() {
 		caOrg          = flag.String("ca-org", "SWG Proxy", "organization name for generated CA")
 		verbose        = flag.Bool("v", false, "verbose logging")
 		printBlockPage = flag.Bool("print-block-page", false, "print default block page template and exit")
+		genPAC         = flag.String("gen-pac", "", "generate PAC file at path and exit")
+		pacBypass      = flag.String("pac-bypass", "", "comma-separated domains to bypass proxy in PAC file")
+		metricsEnabled = flag.Bool("metrics", false, "enable Prometheus /metrics endpoint")
 	)
 	flag.Parse()
 
@@ -44,6 +47,25 @@ func main() {
 	// Print block page template mode
 	if *printBlockPage {
 		fmt.Println(swg.DefaultBlockPageHTML)
+		return
+	}
+
+	// Generate PAC file mode
+	if *genPAC != "" {
+		pac := swg.NewPACGenerator(*addr)
+		if *pacBypass != "" {
+			for d := range strings.SplitSeq(*pacBypass, ",") {
+				d = strings.TrimSpace(d)
+				if d != "" {
+					pac.AddBypassDomain(d)
+				}
+			}
+		}
+		if err := pac.WriteFile(*genPAC); err != nil {
+			logger.Error("generate PAC file", "error", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Generated %s\n", *genPAC)
 		return
 	}
 
@@ -115,6 +137,24 @@ func main() {
 	proxy.Logger = logger
 	proxy.BlockPageURL = effectiveBlockPageURL
 
+	// Set up PAC handler (serves /proxy.pac)
+	pac := swg.NewPACGenerator(effectiveAddr)
+	if *pacBypass != "" {
+		for d := range strings.SplitSeq(*pacBypass, ",") {
+			d = strings.TrimSpace(d)
+			if d != "" {
+				pac.AddBypassDomain(d)
+			}
+		}
+	}
+	proxy.PACHandler = pac
+
+	// Set up metrics
+	if *metricsEnabled {
+		proxy.Metrics = swg.NewMetrics()
+		logger.Info("prometheus metrics enabled at /metrics")
+	}
+
 	// Load custom block page if specified
 	if effectiveBlockPageFile != "" {
 		blockPage, err := swg.NewBlockPageFromFile(effectiveBlockPageFile)
@@ -172,7 +212,7 @@ func main() {
 	go func() {
 		<-ctx.Done()
 		logger.Info("shutting down...")
-		proxy.Shutdown(context.Background())
+		_ = proxy.Shutdown(context.Background())
 	}()
 
 	// Start proxy

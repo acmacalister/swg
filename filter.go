@@ -102,7 +102,7 @@ func (rs *RuleSet) AddRule(r Rule) error {
 
 // AddDomain is a convenience method to add a domain blocking rule.
 func (rs *RuleSet) AddDomain(domain string) {
-	rs.AddRule(Rule{
+	_ = rs.AddRule(Rule{
 		Type:    "domain",
 		Pattern: domain,
 		Reason:  "domain blocked",
@@ -111,7 +111,7 @@ func (rs *RuleSet) AddDomain(domain string) {
 
 // AddURL is a convenience method to add a URL prefix blocking rule.
 func (rs *RuleSet) AddURL(urlPrefix string) {
-	rs.AddRule(Rule{
+	_ = rs.AddRule(Rule{
 		Type:    "url",
 		Pattern: urlPrefix,
 		Reason:  "URL blocked",
@@ -220,6 +220,7 @@ type RuleLoader interface {
 // RuleLoaderFunc is a function adapter for RuleLoader.
 type RuleLoaderFunc func(ctx context.Context) ([]Rule, error)
 
+// Load calls the underlying function to load rules.
 func (f RuleLoaderFunc) Load(ctx context.Context) ([]Rule, error) {
 	return f(ctx)
 }
@@ -290,7 +291,7 @@ func (rf *ReloadableFilter) StartAutoReload(ctx context.Context, interval time.D
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				rf.Load(ctx)
+				_ = rf.Load(ctx)
 			}
 		}
 	}()
@@ -346,7 +347,7 @@ func (l *CSVLoader) Load(ctx context.Context) ([]Rule, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open CSV file: %w", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	return l.LoadFromReader(ctx, file)
 }
@@ -505,7 +506,7 @@ func (l *URLLoader) Load(ctx context.Context) ([]Rule, error) {
 	if err != nil {
 		return nil, fmt.Errorf("fetch rules: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("unexpected status: %d", resp.StatusCode)

@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -263,7 +264,7 @@ func TestRuleSet_Match_URL(t *testing.T) {
 
 func TestRuleSet_Match_Regex(t *testing.T) {
 	rs := NewRuleSet()
-	rs.AddRegex(`.*\.doubleclick\.net.*`)
+	_ = rs.AddRegex(`.*\.doubleclick\.net.*`)
 
 	tests := []struct {
 		name    string
@@ -288,7 +289,7 @@ func TestRuleSet_Match_Regex(t *testing.T) {
 
 func TestRuleSet_ShouldBlock(t *testing.T) {
 	rs := NewRuleSet()
-	rs.AddRule(Rule{
+	_ = rs.AddRule(Rule{
 		Type:     "domain",
 		Pattern:  "blocked.com",
 		Reason:   "test reason",
@@ -314,7 +315,7 @@ func TestRuleSet_Clear(t *testing.T) {
 	rs.AddDomain("a.com")
 	rs.AddDomain("*.b.com")
 	rs.AddURL("http://c.com")
-	rs.AddRegex(`.*d\.com.*`)
+	_ = rs.AddRegex(`.*d\.com.*`)
 
 	if rs.Count() != 4 {
 		t.Errorf("expected 4 rules, got %d", rs.Count())
@@ -502,7 +503,7 @@ func TestMultiLoader(t *testing.T) {
 func TestURLLoader(t *testing.T) {
 	// Create test server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`type,pattern
+		_, _ = w.Write([]byte(`type,pattern
 domain,blocked.com`))
 	}))
 	defer server.Close()
@@ -588,7 +589,7 @@ func TestReloadableFilter_Callbacks(t *testing.T) {
 		}
 	}
 
-	filter.Load(context.Background())
+	_ = filter.Load(context.Background())
 
 	if !reloadCalled {
 		t.Error("OnReload callback not called")
@@ -607,7 +608,7 @@ func TestReloadableFilter_ErrorCallback(t *testing.T) {
 		errorCalled = true
 	}
 
-	filter.Load(context.Background())
+	_ = filter.Load(context.Background())
 
 	if !errorCalled {
 		t.Error("OnError callback not called")
@@ -615,9 +616,9 @@ func TestReloadableFilter_ErrorCallback(t *testing.T) {
 }
 
 func TestReloadableFilter_AutoReload(t *testing.T) {
-	loadCount := 0
+	var loadCount atomic.Int32
 	loader := RuleLoaderFunc(func(ctx context.Context) ([]Rule, error) {
-		loadCount++
+		loadCount.Add(1)
 		return []Rule{{Type: "domain", Pattern: "test.com"}}, nil
 	})
 
@@ -630,8 +631,8 @@ func TestReloadableFilter_AutoReload(t *testing.T) {
 	// Wait for a few reloads
 	time.Sleep(200 * time.Millisecond)
 
-	if loadCount < 2 {
-		t.Errorf("expected multiple loads, got %d", loadCount)
+	if loadCount.Load() < 2 {
+		t.Errorf("expected multiple loads, got %d", loadCount.Load())
 	}
 }
 
@@ -715,9 +716,9 @@ func BenchmarkRuleSet_Match_Wildcard(b *testing.B) {
 
 func BenchmarkRuleSet_Match_Regex(b *testing.B) {
 	rs := NewRuleSet()
-	rs.AddRegex(`.*tracking.*`)
-	rs.AddRegex(`.*analytics.*`)
-	rs.AddRegex(`.*\.doubleclick\..*`)
+	_ = rs.AddRegex(`.*tracking.*`)
+	_ = rs.AddRegex(`.*analytics.*`)
+	_ = rs.AddRegex(`.*\.doubleclick\..*`)
 
 	req := &http.Request{Host: "safe.com", URL: &url.URL{Path: "/"}}
 
@@ -739,6 +740,6 @@ regex,.*e.*,reason,cat`
 
 	b.ResetTimer()
 	for b.Loop() {
-		loader.LoadFromReader(context.Background(), strings.NewReader(csv))
+		_, _ = loader.LoadFromReader(context.Background(), strings.NewReader(csv))
 	}
 }

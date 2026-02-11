@@ -213,5 +213,5 @@ func (bp *BlockPage) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusForbidden)
-	bp.template.Execute(w, data)
+	_ = bp.template.Execute(w, data)
 }

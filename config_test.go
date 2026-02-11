@@ -303,8 +303,8 @@ func TestLoadConfigNoFile(t *testing.T) {
 	// Create temp dir with no config
 	tmpDir := t.TempDir()
 	origDir, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origDir)
+	_ = os.Chdir(tmpDir)
+	defer func() { _ = os.Chdir(origDir) }()
 
 	// Should use defaults when no config file found
 	cfg, err := LoadConfig("")
@@ -528,8 +528,8 @@ func TestWriteExampleConfig(t *testing.T) {
 func TestWriteExampleConfigCurrentDir(t *testing.T) {
 	tmpDir := t.TempDir()
 	origDir, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origDir)
+	_ = os.Chdir(tmpDir)
+	defer func() { _ = os.Chdir(origDir) }()
 
 	err := WriteExampleConfig("swg.yaml")
 	if err != nil {
@@ -555,8 +555,8 @@ server:
 	}
 
 	// Set environment variable to override
-	os.Setenv("SWG_SERVER_ADDR", ":9999")
-	defer os.Unsetenv("SWG_SERVER_ADDR")
+	_ = os.Setenv("SWG_SERVER_ADDR", ":9999")
+	defer func() { _ = os.Unsetenv("SWG_SERVER_ADDR") }()
 
 	cfg, err := LoadConfig(configPath)
 	if err != nil {
@@ -572,12 +572,12 @@ server:
 func TestEnvironmentVariableNestedOverride(t *testing.T) {
 	tmpDir := t.TempDir()
 	origDir, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origDir)
+	_ = os.Chdir(tmpDir)
+	defer func() { _ = os.Chdir(origDir) }()
 
 	// Set environment variable for nested config
-	os.Setenv("SWG_TLS_ORGANIZATION", "Env Org")
-	defer os.Unsetenv("SWG_TLS_ORGANIZATION")
+	_ = os.Setenv("SWG_TLS_ORGANIZATION", "Env Org")
+	defer func() { _ = os.Unsetenv("SWG_TLS_ORGANIZATION") }()
 
 	cfg, err := LoadConfig("")
 	if err != nil {

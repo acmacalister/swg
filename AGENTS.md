@@ -75,6 +75,10 @@ swg/
 ├── proxy_test.go       # Tests for proxy functions
 ├── filter.go           # Rule-based filtering system (RuleSet, loaders)
 ├── filter_test.go      # Tests for filter functions
+├── metrics.go          # Prometheus metrics instrumentation
+├── metrics_test.go     # Tests for metrics functions
+├── pac.go              # PAC file generator
+├── pac_test.go         # Tests for PAC functions
 ├── blockpage.go        # Custom block page templates
 ├── blockpage_test.go   # Tests for block page functions
 ├── config.go           # Viper-based configuration loading
@@ -114,6 +118,8 @@ swg/
 - `Filter` - Request filter (optional)
 - `BlockPageURL` - Redirect URL for blocked requests (optional)
 - `BlockPage` - Custom block page template (optional)
+- `Metrics` - `*Metrics` for Prometheus instrumentation (optional)
+- `PACHandler` - `*PACGenerator` serves `/proxy.pac` (optional)
 - `Logger` - `*slog.Logger` for logging
 - `Transport` - `http.RoundTripper` for outbound requests
 
@@ -155,6 +161,35 @@ Built-in loaders:
 - `StartAutoReload(ctx, interval)` - Background reload goroutine
 - `OnReload` - Callback after successful reload
 - `OnError` - Callback on reload error
+
+### `PACGenerator` (pac.go)
+- `NewPACGenerator(proxyAddr)` - Create PAC generator with defaults
+- `AddBypassDomain(domain)` - Add domain to bypass list
+- `AddBypassNetwork(cidr)` - Add CIDR network to bypass list
+- `Generate(w)` - Write PAC content to writer
+- `GenerateString()` - Return PAC as string
+- `WriteFile(path)` - Write PAC to disk
+- `ServeHTTP(w, r)` - HTTP handler (implements `http.Handler`)
+
+**Fields:**
+- `ProxyAddr` - Proxy address in host:port format
+- `BypassDomains` - Domains that should connect directly
+- `BypassNetworks` - CIDR networks that should connect directly
+- `FallbackDirect` - Fall back to direct if proxy unreachable (default: true)
+
+### `Metrics` (metrics.go)
+- `NewMetrics()` - Create metrics instance with Prometheus registry
+- `Handler()` - Returns `http.Handler` for `/metrics` endpoint
+- `RecordRequest(method, scheme)` - Count requests
+- `RecordBlocked(reason)` - Count blocked requests
+- `RecordRequestDuration(method, statusCode, duration)` - Histogram of latency
+- `IncActiveConns()` / `DecActiveConns()` - Active connection gauge
+- `SetCertCacheSize(size)` - Certificate cache gauge
+- `RecordCertCacheHit()` / `RecordCertCacheMiss()` - Cache metrics
+- `SetFilterRuleCount(count)` - Rule count gauge
+- `RecordFilterReload()` / `RecordFilterReloadError()` - Reload counters
+- `RecordUpstreamError(host)` - Upstream error counter
+- `RecordTLSHandshakeError()` - TLS handshake failure counter
 
 ### `BlockPage` (blockpage.go)
 - `NewBlockPage()` - Default styled block page
@@ -226,6 +261,9 @@ regex,.*\.doubleclick\.net.*,ad tracker,ads
 | `-gen-ca` | false | Generate new CA and exit |
 | `-ca-org` | `SWG Proxy` | Organization for generated CA |
 | `-print-block-page` | false | Print default block page template |
+| `-gen-pac` | (none) | Generate PAC file at path and exit |
+| `-pac-bypass` | (none) | Comma-separated domains to bypass in PAC |
+| `-metrics` | false | Enable Prometheus /metrics endpoint |
 | `-v` | false | Verbose (debug) logging |
 
 ## Testing Patterns

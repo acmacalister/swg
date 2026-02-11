@@ -38,6 +38,12 @@ type Proxy struct {
 	// Transport for outbound requests (optional, uses default if nil)
 	Transport http.RoundTripper
 
+	// Metrics collects Prometheus metrics (optional)
+	Metrics *Metrics
+
+	// PACHandler serves PAC files at /proxy.pac (optional)
+	PACHandler *PACGenerator
+
 	listener net.Listener
 	srv      *http.Server
 }
@@ -51,6 +57,7 @@ type Filter interface {
 // FilterFunc is a function adapter for Filter.
 type FilterFunc func(req *http.Request) (blocked bool, reason string)
 
+// ShouldBlock calls the underlying function to determine if a request should be blocked.
 func (f FilterFunc) ShouldBlock(req *http.Request) (bool, string) {
 	return f(req)
 }
@@ -91,6 +98,15 @@ func (p *Proxy) Shutdown(ctx context.Context) error {
 
 // ServeHTTP handles incoming proxy requests.
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if p.PACHandler != nil && r.URL.Path == "/proxy.pac" && r.Method != http.MethodConnect {
+		p.PACHandler.ServeHTTP(w, r)
+		return
+	}
+	if p.Metrics != nil && r.URL.Path == "/metrics" && r.Method != http.MethodConnect {
+		p.Metrics.Handler().ServeHTTP(w, r)
+		return
+	}
+
 	if r.Method == http.MethodConnect {
 		p.handleConnect(w, r)
 	} else {
@@ -100,6 +116,11 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // handleConnect handles HTTPS CONNECT requests (MITM interception).
 func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
+	if p.Metrics != nil {
+		p.Metrics.RecordRequest(r.Method, "https")
+		p.Metrics.IncActiveConns()
+		defer p.Metrics.DecActiveConns()
+	}
 	p.Logger.Debug("CONNECT", "host", r.Host)
 
 	// Hijack the connection
@@ -120,7 +141,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	_, err = clientConn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
 	if err != nil {
 		p.Logger.Error("write connect response", "error", err)
-		clientConn.Close()
+		_ = clientConn.Close()
 		return
 	}
 
@@ -146,7 +167,10 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	tlsClientConn := tls.Server(clientConn, tlsConfig)
 	if err := tlsClientConn.Handshake(); err != nil {
 		p.Logger.Error("TLS handshake with client", "error", err, "host", host)
-		clientConn.Close()
+		if p.Metrics != nil {
+			p.Metrics.RecordTLSHandshakeError()
+		}
+		_ = clientConn.Close()
 		return
 	}
 
@@ -156,13 +180,13 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 // handleTLSConnection reads HTTP requests from the TLS connection and processes them.
 func (p *Proxy) handleTLSConnection(conn *tls.Conn, defaultHost string) {
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	reader := bufio.NewReader(conn)
 
 	for {
 		// Set read deadline
-		conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+		_ = conn.SetReadDeadline(time.Now().Add(30 * time.Second))
 
 		req, err := http.ReadRequest(reader)
 		if err != nil {
@@ -187,22 +211,32 @@ func (p *Proxy) handleTLSConnection(conn *tls.Conn, defaultHost string) {
 		if p.Filter != nil {
 			if blocked, reason := p.Filter.ShouldBlock(req); blocked {
 				p.Logger.Info("blocked", "host", req.Host, "path", req.URL.Path, "reason", reason)
+				if p.Metrics != nil {
+					p.Metrics.RecordBlocked(reason)
+				}
 				p.writeBlockResponse(conn, req, reason)
 				continue
 			}
 		}
 
 		// Forward the request
+		start := time.Now()
 		resp, err := p.forwardRequest(req)
 		if err != nil {
 			p.Logger.Error("forward request", "error", err, "url", req.URL)
+			if p.Metrics != nil {
+				p.Metrics.RecordUpstreamError(req.Host)
+			}
 			p.writeErrorResponse(conn, err)
 			continue
+		}
+		if p.Metrics != nil {
+			p.Metrics.RecordRequestDuration(req.Method, resp.StatusCode, time.Since(start))
 		}
 
 		// Write response back to client
 		err = resp.Write(conn)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if err != nil {
 			p.Logger.Debug("write response", "error", err)
 			return
@@ -282,7 +316,7 @@ func (p *Proxy) writeBlockResponse(w io.Writer, req *http.Request, reason string
 		}
 	}
 
-	resp.Write(w)
+	_ = resp.Write(w)
 }
 
 // writeErrorResponse writes an error response.
@@ -296,17 +330,23 @@ func (p *Proxy) writeErrorResponse(w io.Writer, err error) {
 		Body:          io.NopCloser(strings.NewReader(body)),
 		ContentLength: int64(len(body)),
 	}
-	resp.Write(w)
+	_ = resp.Write(w)
 }
 
 // handleHTTP handles plain HTTP requests (non-CONNECT).
 func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
+	if p.Metrics != nil {
+		p.Metrics.RecordRequest(r.Method, "http")
+	}
 	p.Logger.Debug("HTTP", "method", r.Method, "url", r.URL)
 
 	// Check filter
 	if p.Filter != nil {
 		if blocked, reason := p.Filter.ShouldBlock(r); blocked {
 			p.Logger.Info("blocked", "url", r.URL, "reason", reason)
+			if p.Metrics != nil {
+				p.Metrics.RecordBlocked(reason)
+			}
 			if p.BlockPageURL != "" {
 				blockURL, _ := url.Parse(p.BlockPageURL)
 				q := blockURL.Query()
@@ -336,7 +376,7 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 
 				w.Header().Set("Content-Type", "text/html; charset=utf-8")
 				w.WriteHeader(http.StatusForbidden)
-				blockPage.Render(w, data)
+				blockPage.Render(w, data) //nolint:errcheck
 			}
 			return
 		}
@@ -351,13 +391,20 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		transport = http.DefaultTransport
 	}
 
+	start := time.Now()
 	resp, err := transport.RoundTrip(outReq)
 	if err != nil {
 		p.Logger.Error("forward request", "error", err, "url", r.URL)
+		if p.Metrics != nil {
+			p.Metrics.RecordUpstreamError(r.Host)
+		}
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
+	if p.Metrics != nil {
+		p.Metrics.RecordRequestDuration(r.Method, resp.StatusCode, time.Since(start))
+	}
 
 	// Copy response headers
 	for k, vv := range resp.Header {
@@ -366,7 +413,7 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	w.WriteHeader(resp.StatusCode)
-	io.Copy(w, resp.Body)
+	_, _ = io.Copy(w, resp.Body)
 }
 
 // Hop-by-hop headers that should not be forwarded

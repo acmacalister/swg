@@ -1,6 +1,8 @@
 # SWG - Secure Web Gateway
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/acmacalister/swg.svg)](https://pkg.go.dev/github.com/acmacalister/swg)
+[![CI](https://github.com/acmacalister/swg/actions/workflows/ci.yml/badge.svg)](https://github.com/acmacalister/swg/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/acmacalister/swg/branch/master/graph/badge.svg)](https://codecov.io/gh/acmacalister/swg)
 [![Go Report Card](https://goreportcard.com/badge/github.com/acmacalister/swg)](https://goreportcard.com/report/github.com/acmacalister/swg)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
@@ -9,9 +11,12 @@ An HTTPS man-in-the-middle (MITM) proxy for content filtering written in Go. SWG
 ## Features
 
 - **SSL/TLS Interception**: Decrypt HTTPS traffic using dynamically generated certificates
-- **Content Filtering**: Block requests based on domain names with wildcard support
+- **Content Filtering**: Block requests based on domain names, URL prefixes, and regex patterns
 - **Custom Block Pages**: Fully customizable HTML block pages with template support
-- **Zero Dependencies**: Built entirely with the Go standard library
+- **PAC File Generation**: Generate Proxy Auto-Configuration files for client setup
+- **Prometheus Metrics**: Built-in instrumentation for monitoring and alerting
+- **Auto-Reloading Rules**: Load blocklists from CSV, HTTP endpoints, or databases with periodic refresh
+- **Configuration Files**: YAML/JSON/TOML config with environment variable overrides
 - **Cross-Platform**: Runs on Linux, macOS, and Windows
 
 ## Installation
@@ -137,6 +142,12 @@ Usage of swg:
         generate a new CA certificate and exit
   -gen-config
         generate example config file and exit
+  -gen-pac
+        generate a PAC file and exit
+  -metrics
+        enable Prometheus metrics endpoint
+  -pac-bypass string
+        comma-separated domains to bypass proxy in PAC file
   -print-block-page
         print default block page template and exit
   -v    verbose logging
@@ -162,6 +173,12 @@ swg -block "restricted.com" -block-page-file ./my-block-page.html
 
 # Export default block page template for customization
 swg -print-block-page > custom-block.html
+
+# Generate a PAC file for client auto-configuration
+swg -gen-pac -pac-bypass "internal.company.com,*.local"
+
+# Enable Prometheus metrics on /metrics
+swg -block "ads.com" -metrics -v
 ```
 
 ### Configuration File
@@ -435,6 +452,32 @@ defer cancel()
 if err := proxy.Shutdown(ctx); err != nil {
     log.Printf("shutdown error: %v", err)
 }
+```
+
+### PAC File Generation
+
+```go
+pac := swg.NewPACGenerator("proxy.example.com:8080")
+pac.AddBypassDomain("internal.company.com")
+pac.AddBypassNetwork("10.0.0.0/8")
+
+// Serve as HTTP handler
+http.Handle("/proxy.pac", pac)
+
+// Or generate to file
+pac.WriteFile("proxy.pac")
+```
+
+### Prometheus Metrics
+
+```go
+metrics := swg.NewMetrics()
+http.Handle("/metrics", metrics.Handler())
+
+// Record proxy events
+metrics.RecordRequest("GET", "https")
+metrics.RecordBlocked("ads")
+metrics.RecordRequestDuration("GET", 200, duration)
 ```
 
 ## Architecture
