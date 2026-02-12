@@ -64,6 +64,13 @@ type Proxy struct {
 	// transport instead of the Transport field.
 	TransportPool *TransportPool
 
+	// Policy provides lifecycle hooks, identity resolution, and response
+	// body scanning (optional). When set, request hooks run before
+	// filtering and response hooks run after the upstream response is
+	// received. This enables pluggable AV scanning, DLP, content-type
+	// blocking, per-group policies, and more.
+	Policy *PolicyEngine
+
 	listener net.Listener
 	srv      *http.Server
 }
@@ -247,6 +254,19 @@ func (p *Proxy) handleTLSConnection(conn *tls.Conn, defaultHost string) {
 			req.Host = defaultHost
 		}
 
+		// Run policy request hooks (identity resolution, access control).
+		var rc *RequestContext
+		if p.Policy != nil {
+			var policyResp *http.Response
+			rc, policyResp = p.Policy.ProcessRequest(req.Context(), req)
+			if policyResp != nil {
+				_ = policyResp.Write(conn)
+				_ = policyResp.Body.Close()
+				continue
+			}
+			req = req.WithContext(WithRequestContext(req.Context(), rc))
+		}
+
 		// Check filter
 		if p.Filter != nil {
 			if blocked, reason := p.Filter.ShouldBlock(req); blocked {
@@ -298,6 +318,17 @@ func (p *Proxy) handleTLSConnection(conn *tls.Conn, defaultHost string) {
 		}
 		if p.Metrics != nil {
 			p.Metrics.RecordRequestDuration(req.Method, resp.StatusCode, time.Since(start))
+		}
+
+		// Run policy response hooks (content-type filter, body scanning).
+		if p.Policy != nil {
+			processed, err := p.Policy.ProcessResponse(req.Context(), req, resp, rc)
+			if err != nil {
+				_ = resp.Body.Close()
+				p.writeErrorResponse(conn, err)
+				continue
+			}
+			resp = processed
 		}
 
 		// Write response back to client
@@ -439,6 +470,25 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	p.Logger.Debug("HTTP", "method", r.Method, "url", r.URL)
 
+	// Run policy request hooks (identity resolution, access control).
+	var rc *RequestContext
+	if p.Policy != nil {
+		var policyResp *http.Response
+		rc, policyResp = p.Policy.ProcessRequest(r.Context(), r)
+		if policyResp != nil {
+			for k, vv := range policyResp.Header {
+				for _, v := range vv {
+					w.Header().Add(k, v)
+				}
+			}
+			w.WriteHeader(policyResp.StatusCode)
+			_, _ = io.Copy(w, policyResp.Body)
+			_ = policyResp.Body.Close()
+			return
+		}
+		r = r.WithContext(WithRequestContext(r.Context(), rc))
+	}
+
 	// Check filter
 	if p.Filter != nil {
 		if blocked, reason := p.Filter.ShouldBlock(r); blocked {
@@ -526,6 +576,17 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	defer func() { _ = resp.Body.Close() }()
 	if p.Metrics != nil {
 		p.Metrics.RecordRequestDuration(r.Method, resp.StatusCode, time.Since(start))
+	}
+
+	// Run policy response hooks (content-type filter, body scanning).
+	if p.Policy != nil {
+		processed, pErr := p.Policy.ProcessResponse(r.Context(), r, resp, rc)
+		if pErr != nil {
+			_ = resp.Body.Close()
+			http.Error(w, pErr.Error(), http.StatusBadGateway)
+			return
+		}
+		resp = processed
 	}
 
 	// Copy response headers
