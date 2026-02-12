@@ -203,6 +203,73 @@ func (rs *RuleSet) Clear() {
 	rs.regexPatterns = nil
 }
 
+// RemoveRule removes the first rule matching the given type and pattern.
+// Returns true if a rule was removed.
+func (rs *RuleSet) RemoveRule(ruleType, pattern string) bool {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+
+	switch ruleType {
+	case "domain":
+		p := strings.ToLower(pattern)
+		if strings.HasPrefix(p, "*.") {
+			key := p[2:]
+			if _, ok := rs.wildcardDomains[key]; ok {
+				delete(rs.wildcardDomains, key)
+				return true
+			}
+		} else {
+			if _, ok := rs.domains[p]; ok {
+				delete(rs.domains, p)
+				return true
+			}
+		}
+
+	case "url":
+		p := strings.ToLower(pattern)
+		for i, pr := range rs.urlPrefixes {
+			if pr.prefix == p {
+				rs.urlPrefixes = append(rs.urlPrefixes[:i], rs.urlPrefixes[i+1:]...)
+				return true
+			}
+		}
+
+	case "regex":
+		for i, rule := range rs.regexPatterns {
+			if rule.Pattern == pattern {
+				rs.regexPatterns = append(rs.regexPatterns[:i], rs.regexPatterns[i+1:]...)
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// Rules returns a snapshot of all rules in the set.
+func (rs *RuleSet) Rules() []Rule {
+	rs.mu.RLock()
+	defer rs.mu.RUnlock()
+
+	rules := make([]Rule, 0, len(rs.domains)+len(rs.wildcardDomains)+len(rs.urlPrefixes)+len(rs.regexPatterns))
+
+	for _, r := range rs.domains {
+		rules = append(rules, Rule{Type: r.Type, Pattern: r.Pattern, Reason: r.Reason, Category: r.Category})
+	}
+	for _, r := range rs.wildcardDomains {
+		rules = append(rules, Rule{Type: r.Type, Pattern: r.Pattern, Reason: r.Reason, Category: r.Category})
+	}
+	for _, pr := range rs.urlPrefixes {
+		r := pr.rule
+		rules = append(rules, Rule{Type: r.Type, Pattern: r.Pattern, Reason: r.Reason, Category: r.Category})
+	}
+	for _, r := range rs.regexPatterns {
+		rules = append(rules, Rule{Type: r.Type, Pattern: r.Pattern, Reason: r.Reason, Category: r.Category})
+	}
+
+	return rules
+}
+
 // Count returns the total number of rules in the set.
 func (rs *RuleSet) Count() int {
 	rs.mu.RLock()
@@ -313,6 +380,14 @@ func (rf *ReloadableFilter) Count() int {
 	rf.mu.RLock()
 	defer rf.mu.RUnlock()
 	return rf.ruleSet.Count()
+}
+
+// RuleSet returns the underlying RuleSet for direct rule manipulation.
+// The returned RuleSet is thread-safe for concurrent reads and writes.
+func (rf *ReloadableFilter) RuleSet() *RuleSet {
+	rf.mu.RLock()
+	defer rf.mu.RUnlock()
+	return rf.ruleSet
 }
 
 // CSVLoader loads rules from a CSV file.

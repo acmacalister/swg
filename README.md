@@ -29,6 +29,7 @@ An HTTPS man-in-the-middle (MITM) proxy for content filtering written in Go. SWG
 - **Upstream Proxy Chaining**: Forward through a parent proxy with CONNECT tunnel and PROXY protocol support
 - **Connection Pooling**: Configurable transport pool with HTTP/2 support and connection statistics
 - **Rate Limiting**: Per-client token-bucket rate limiter with automatic stale bucket cleanup
+- **Admin API**: REST endpoints for runtime rule CRUD, status inspection, and filter reloads via [chi](https://github.com/go-chi/chi)
 - **Certificate Rotation**: Hot-swap CA certificates at runtime without proxy restart
 - **Cross-Platform**: Runs on Linux, macOS, and Windows
 
@@ -677,6 +678,53 @@ http.Handle("/proxy.pac", pac)
 // Or generate to file
 pac.WriteFile("proxy.pac")
 ```
+
+### Admin API
+
+The Admin API provides REST endpoints for runtime rule management:
+
+```go
+admin := swg.NewAdminAPI(proxy)
+admin.Logger = logger
+
+// Optional: configure reload from your source
+admin.ReloadFunc = func(ctx context.Context) error {
+    return filter.Load(ctx)
+}
+
+proxy.Admin = admin
+```
+
+Endpoints (default prefix `/api`):
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/status` | Proxy status, rule count, uptime, filter type |
+| `GET` | `/api/rules` | List all active rules |
+| `POST` | `/api/rules` | Add a rule (`{"type":"domain","pattern":"evil.com"}`) |
+| `DELETE` | `/api/rules` | Remove a rule (`{"type":"domain","pattern":"evil.com"}`) |
+| `POST` | `/api/reload` | Reload rules from source |
+
+```bash
+# Check status
+curl http://localhost:8080/api/status
+
+# List rules
+curl http://localhost:8080/api/rules
+
+# Add a rule
+curl -X POST http://localhost:8080/api/rules \
+  -d '{"type":"domain","pattern":"ads.com","reason":"advertising"}'
+
+# Remove a rule
+curl -X DELETE http://localhost:8080/api/rules \
+  -d '{"type":"domain","pattern":"ads.com"}'
+
+# Trigger reload
+curl -X POST http://localhost:8080/api/reload
+```
+
+Rule mutations require the filter to be a `*RuleSet` or `*ReloadableFilter`. Other filter types report status and rules as read-only.
 
 ### Prometheus Metrics
 

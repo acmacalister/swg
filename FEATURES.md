@@ -152,6 +152,19 @@ Combine multiple filter strategies into a single pipeline.
 - All filter types (`DomainFilter`, `RuleSet`, `AllowListFilter`, `TimeRule`, `GroupPolicyFilter`, `ReloadableFilter`) implement the same `Filter` interface
 - Filters and policy hooks coexist: `PolicyEngine` runs first, then `Proxy.Filter`
 
+### Admin API ✅
+REST endpoints for runtime rule management via [chi](https://github.com/go-chi/chi) router.
+
+- `GET /api/status` — proxy status, rule count, uptime, filter type
+- `GET /api/rules` — list all active rules
+- `POST /api/rules` — add a rule (domain, URL, or regex)
+- `DELETE /api/rules` — remove a rule
+- `POST /api/reload` — trigger filter reload via user-provided `ReloadFunc`
+- Configurable path prefix (default `/api`)
+- Supports `*RuleSet` and `*ReloadableFilter` for full CRUD; other filter types are read-only
+- `RuleSet.RemoveRule()` and `RuleSet.Rules()` for programmatic rule management
+- `ReloadableFilter.RuleSet()` exposes underlying rule set
+
 ---
 
 ## Planned
@@ -160,5 +173,4 @@ Combine multiple filter strategies into a single pipeline.
 - **mTLS client auth** — require client certificates to use the proxy, limiting access to managed devices
 
 ### Operational
-- **Admin API** — REST endpoints to add/remove rules, view stats, and trigger reloads at runtime
 - **Bypass header/token** — allow authorized clients to skip filtering for debugging

@@ -71,6 +71,12 @@ type Proxy struct {
 	// blocking, per-group policies, and more.
 	Policy *PolicyEngine
 
+	// Admin provides REST endpoints for runtime rule management,
+	// status inspection, and filter reloads (optional). When set,
+	// requests matching the AdminAPI.PathPrefix are routed to the
+	// admin handler instead of being proxied.
+	Admin *AdminAPI
+
 	listener net.Listener
 	srv      *http.Server
 }
@@ -142,6 +148,10 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			p.HealthChecker.HandleReadyz(w, r)
 			return
 		}
+	}
+	if p.Admin != nil && strings.HasPrefix(r.URL.Path, p.Admin.PathPrefix) && r.Method != http.MethodConnect {
+		p.Admin.ServeHTTP(w, r)
+		return
 	}
 
 	// Rate limiting

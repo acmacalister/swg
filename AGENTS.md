@@ -97,6 +97,8 @@ swg/
 ├── certrotate_test.go  # Tests for cert rotation functions
 ├── policy.go           # Policy engine, lifecycle hooks, identity, scanning
 ├── policy_test.go      # Tests for policy engine functions
+├── admin.go            # Admin REST API (chi router) for runtime management
+├── admin_test.go       # Tests for admin API functions
 ├── config.go           # Viper-based configuration loading
 ├── config_test.go      # Tests for config functions
 ├── .goreleaser.yaml    # GoReleaser configuration
@@ -109,7 +111,8 @@ swg/
 │   ├── postgres/       # PostgreSQL blocklist example
 │   ├── policy/         # Policy engine with identity, groups, scanning
 │   ├── allowlist/      # Allow-list mode with time-based rules
-│   └── scanner/        # Response body scanning (AV/DLP)
+│   ├── scanner/        # Response body scanning (AV/DLP)
+│   └── admin/          # Admin API with runtime rule management
 ├── deploy/
 │   ├── kubernetes/     # Raw K8s manifests
 │   └── helm/swg/       # Helm chart
@@ -146,6 +149,7 @@ swg/
 - `RateLimiter` - `*RateLimiter` per-client request throttling (optional)
 - `TransportPool` - `*TransportPool` connection-pooled HTTP/2 transport (optional)
 - `Policy` - `*PolicyEngine` lifecycle hooks, identity, and body scanning (optional)
+- `Admin` - `*AdminAPI` REST endpoints for runtime rule management (optional)
 - `Logger` - `*slog.Logger` for logging
 - `Transport` - `http.RoundTripper` for outbound requests
 
@@ -165,6 +169,9 @@ Advanced filtering with multiple rule types:
 - `AddURL(prefix)` - Block URL prefixes
 - `AddRegex(pattern)` - Block by regex pattern
 - `AddRule(Rule)` - Add rule with full metadata (type, pattern, reason, category)
+- `RemoveRule(type, pattern)` - Remove first matching rule by type and pattern
+- `Rules()` - Returns a snapshot of all rules as `[]Rule`
+- `Count()` - Returns total number of rules
 - `Match(req)` - Returns matching rule
 - `ShouldBlock(req)` - Implements `Filter` interface
 
@@ -183,10 +190,32 @@ Built-in loaders:
 
 ### `ReloadableFilter` (filter.go)
 - `NewReloadableFilter(loader)` - Create with a `RuleLoader`
+- `RuleSet()` - Returns the underlying `*RuleSet` for direct rule manipulation
 - `Load(ctx)` - Load/reload rules from source
 - `StartAutoReload(ctx, interval)` - Background reload goroutine
 - `OnReload` - Callback after successful reload
 - `OnError` - Callback on reload error
+
+### `AdminAPI` (admin.go)
+REST API for runtime proxy management using [chi](https://github.com/go-chi/chi) router:
+- `NewAdminAPI(proxy)` - Create admin API wired to a proxy
+- `Handler()` - Returns `http.Handler` with path prefix stripped
+- `ServeHTTP(w, r)` - Implements `http.Handler`
+
+**Fields:**
+- `Proxy` - The proxy instance to manage
+- `Logger` - `*slog.Logger` for admin API events
+- `PathPrefix` - URL path prefix (default `/api`)
+- `ReloadFunc` - Called on `POST /reload`; if nil, returns 501
+
+**Endpoints (under PathPrefix):**
+- `GET /status` - Proxy status, rule count, uptime, filter type
+- `GET /rules` - List all active rules
+- `POST /rules` - Add a rule (JSON body: type, pattern, reason, category)
+- `DELETE /rules` - Remove a rule (JSON body: type, pattern)
+- `POST /reload` - Trigger filter reload via ReloadFunc
+
+**Response types:** `StatusResponse`, `RulesResponse`, `RuleRequest`, `ErrorResponse`, `MessageResponse`
 
 ### `PACGenerator` (pac.go)
 - `NewPACGenerator(proxyAddr)` - Create PAC generator with defaults
