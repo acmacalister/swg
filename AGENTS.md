@@ -99,6 +99,8 @@ swg/
 ├── policy_test.go      # Tests for policy engine functions
 ├── admin.go            # Admin REST API (chi router) for runtime management
 ├── admin_test.go       # Tests for admin API functions
+├── mtls.go             # mTLS client certificate authentication
+├── mtls_test.go        # Tests for mTLS functions
 ├── config.go           # Viper-based configuration loading
 ├── config_test.go      # Tests for config functions
 ├── .goreleaser.yaml    # GoReleaser configuration
@@ -112,7 +114,8 @@ swg/
 │   ├── policy/         # Policy engine with identity, groups, scanning
 │   ├── allowlist/      # Allow-list mode with time-based rules
 │   ├── scanner/        # Response body scanning (AV/DLP)
-│   └── admin/          # Admin API with runtime rule management
+│   ├── admin/          # Admin API with runtime rule management
+│   └── mtls/           # mTLS client certificate authentication
 ├── deploy/
 │   ├── kubernetes/     # Raw K8s manifests
 │   └── helm/swg/       # Helm chart
@@ -150,6 +153,7 @@ swg/
 - `TransportPool` - `*TransportPool` connection-pooled HTTP/2 transport (optional)
 - `Policy` - `*PolicyEngine` lifecycle hooks, identity, and body scanning (optional)
 - `Admin` - `*AdminAPI` REST endpoints for runtime rule management (optional)
+- `ClientAuth` - `*ClientAuth` mTLS client certificate authentication (optional)
 - `Logger` - `*slog.Logger` for logging
 - `Transport` - `http.RoundTripper` for outbound requests
 
@@ -216,6 +220,23 @@ REST API for runtime proxy management using [chi](https://github.com/go-chi/chi)
 - `POST /reload` - Trigger filter reload via ReloadFunc
 
 **Response types:** `StatusResponse`, `RulesResponse`, `RuleRequest`, `ErrorResponse`, `MessageResponse`
+
+### `ClientAuth` (mtls.go)
+mTLS client certificate authentication at the proxy listener level:
+- `NewClientAuth(pool)` - Create with existing cert pool
+- `NewClientAuthFromPEM(pemData)` - Create from PEM-encoded CA certificates
+- `NewClientAuthFromFile(path)` - Load CA from PEM file
+- `SetPolicy(policy)` / `Policy()` - Get/set client auth policy (thread-safe)
+- `AddCACert(cert)` - Add CA certificate to pool
+- `AddCAPEM(pemData)` - Append PEM certificates to pool
+- `TLSConfig()` - Returns `*tls.Config` with client auth settings
+- `WrapListener(inner, serverCert)` - Wrap TCP listener with TLS + mTLS
+- `VerifyPeerCertificate(rawCerts, _)` - Manual peer certificate verification
+- `IdentityFromConn(conn)` - Extract CN (identity) and Organization (groups) from peer cert
+- `GenerateClientCert(caCert, caKeyPEM, cn, orgs, validYears)` - Generate signed client certificate
+
+**Fields:**
+- `IdentityFromCert` - Map cert subject to RequestContext identity/groups (default: true)
 
 ### `PACGenerator` (pac.go)
 - `NewPACGenerator(proxyAddr)` - Create PAC generator with defaults

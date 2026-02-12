@@ -77,6 +77,11 @@ type Proxy struct {
 	// admin handler instead of being proxied.
 	Admin *AdminAPI
 
+	// ClientAuth enables mutual TLS (mTLS) on the proxy listener.
+	// When set, clients must present a valid certificate signed by
+	// a trusted CA to connect. See [ClientAuth] for configuration.
+	ClientAuth *ClientAuth
+
 	listener net.Listener
 	srv      *http.Server
 }
@@ -106,11 +111,24 @@ func NewProxy(addr string, cm *CertManager) *Proxy {
 }
 
 // ListenAndServe starts the proxy server.
+// When [Proxy.ClientAuth] is set, the listener is wrapped with TLS to
+// enforce mutual TLS authentication before any HTTP traffic.
 func (p *Proxy) ListenAndServe() error {
 	listener, err := net.Listen("tcp", p.Addr)
 	if err != nil {
 		return fmt.Errorf("listen: %w", err)
 	}
+
+	if p.ClientAuth != nil {
+		serverCert, certErr := p.CertManager.GetCertificateForHost("proxy.local")
+		if certErr != nil {
+			_ = listener.Close()
+			return fmt.Errorf("mtls server cert: %w", certErr)
+		}
+		listener = p.ClientAuth.WrapListener(listener, *serverCert)
+		p.Logger.Info("mTLS enabled on proxy listener")
+	}
+
 	p.listener = listener
 
 	p.srv = &http.Server{
@@ -131,6 +149,18 @@ func (p *Proxy) Shutdown(ctx context.Context) error {
 
 // ServeHTTP handles incoming proxy requests.
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if p.ClientAuth != nil && p.ClientAuth.IdentityFromCert && r.TLS != nil && len(r.TLS.PeerCertificates) > 0 {
+		cert := r.TLS.PeerCertificates[0]
+		ctx := WithRequestContext(r.Context(), &RequestContext{
+			Identity:  cert.Subject.CommonName,
+			Groups:    cert.Subject.Organization,
+			ClientIP:  r.RemoteAddr,
+			StartTime: time.Now(),
+			Tags:      map[string]string{"auth": "mtls"},
+		})
+		r = r.WithContext(ctx)
+	}
+
 	if p.PACHandler != nil && r.URL.Path == "/proxy.pac" && r.Method != http.MethodConnect {
 		p.PACHandler.ServeHTTP(w, r)
 		return

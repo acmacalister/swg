@@ -165,12 +165,22 @@ REST endpoints for runtime rule management via [chi](https://github.com/go-chi/c
 - `RuleSet.RemoveRule()` and `RuleSet.Rules()` for programmatic rule management
 - `ReloadableFilter.RuleSet()` exposes underlying rule set
 
+### mTLS Client Authentication
+
+Mutual TLS authentication at the proxy listener level, requiring client certificates to connect.
+
+- `ClientAuth` struct manages CA pool and auth policy (thread-safe)
+- Constructors: `NewClientAuth`, `NewClientAuthFromPEM`, `NewClientAuthFromFile`
+- `WrapListener` wraps a TCP listener with TLS + client cert verification
+- `IdentityFromConn` extracts CN (identity) and Organization (groups) from peer cert
+- `GenerateClientCert` convenience function for creating signed client certificates
+- Configurable policy: `RequireAndVerifyClientCert` (default) or `VerifyClientCertIfGiven` for optional mode
+- Cert identity injected into `RequestContext` (CN → Identity, Orgs → Groups, tag `auth=mtls`)
+- Integrates with `Proxy.ClientAuth` field for automatic listener wrapping and identity injection
+
 ---
 
 ## Planned
-
-### Client Configuration
-- **mTLS client auth** — require client certificates to use the proxy, limiting access to managed devices
 
 ### Operational
 - **Bypass header/token** — allow authorized clients to skip filtering for debugging

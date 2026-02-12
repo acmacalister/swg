@@ -30,6 +30,7 @@ An HTTPS man-in-the-middle (MITM) proxy for content filtering written in Go. SWG
 - **Connection Pooling**: Configurable transport pool with HTTP/2 support and connection statistics
 - **Rate Limiting**: Per-client token-bucket rate limiter with automatic stale bucket cleanup
 - **Admin API**: REST endpoints for runtime rule CRUD, status inspection, and filter reloads via [chi](https://github.com/go-chi/chi)
+- **mTLS Client Auth**: Mutual TLS authentication requiring client certificates with identity/group extraction
 - **Certificate Rotation**: Hot-swap CA certificates at runtime without proxy restart
 - **Cross-Platform**: Runs on Linux, macOS, and Windows
 
@@ -725,6 +726,44 @@ curl -X POST http://localhost:8080/api/reload
 ```
 
 Rule mutations require the filter to be a `*RuleSet` or `*ReloadableFilter`. Other filter types report status and rules as read-only.
+
+### mTLS Client Authentication
+
+Require client certificates to connect to the proxy, limiting access to managed devices:
+
+```go
+// Load CA that signed client certificates
+clientAuth, err := swg.NewClientAuthFromFile("client-ca.pem")
+if err != nil {
+    log.Fatal(err)
+}
+
+// Optional: allow unauthenticated clients (gradual rollout)
+// clientAuth.SetPolicy(tls.VerifyClientCertIfGiven)
+
+proxy.ClientAuth = clientAuth
+```
+
+When enabled, the proxy listener is wrapped with TLS requiring client certificates. The cert's Subject fields are automatically mapped to identity:
+
+- **CommonName** → `RequestContext.Identity`
+- **Organization** → `RequestContext.Groups`
+- Tag `auth=mtls` is set on the request context
+
+Generate client certificates for testing (same package or using the CA PEM directly):
+
+```go
+// Parse CA cert from PEM for signing
+block, _ := pem.Decode(caCertPEM)
+caCert, _ := x509.ParseCertificate(block.Bytes)
+
+certPEM, keyPEM, err := swg.GenerateClientCert(
+    caCert, caKeyPEM,
+    "alice",                       // CommonName (identity)
+    []string{"engineering", "ops"}, // Organizations (groups)
+    1,                              // Valid for 1 year
+)
+```
 
 ### Prometheus Metrics
 
