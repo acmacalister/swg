@@ -3,6 +3,7 @@ package swg
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 )
@@ -184,5 +185,40 @@ func BenchmarkBlockPage_RenderString(b *testing.B) {
 	b.ResetTimer()
 	for b.Loop() {
 		_, _ = bp.RenderString(data)
+	}
+}
+
+func TestNewBlockPageFromFile(t *testing.T) {
+	tmplContent := `<html><body>Blocked: {{.URL}} - {{.Reason}}</body></html>`
+	dir := t.TempDir()
+	path := dir + "/block.html"
+
+	if err := os.WriteFile(path, []byte(tmplContent), 0o644); err != nil {
+		t.Fatalf("write template: %v", err)
+	}
+
+	bp, err := NewBlockPageFromFile(path)
+	if err != nil {
+		t.Fatalf("NewBlockPageFromFile failed: %v", err)
+	}
+
+	data := BlockPageData{URL: "https://evil.com", Reason: "malware"}
+	result, err := bp.RenderString(data)
+	if err != nil {
+		t.Fatalf("RenderString failed: %v", err)
+	}
+
+	if !strings.Contains(result, "https://evil.com") {
+		t.Error("missing URL in output")
+	}
+	if !strings.Contains(result, "malware") {
+		t.Error("missing reason in output")
+	}
+}
+
+func TestNewBlockPageFromFile_Error(t *testing.T) {
+	_, err := NewBlockPageFromFile("/nonexistent/path/block.html")
+	if err == nil {
+		t.Error("expected error for missing file")
 	}
 }

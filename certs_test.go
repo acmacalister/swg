@@ -3,6 +3,7 @@ package swg
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"os"
 	"testing"
 )
 
@@ -184,5 +185,66 @@ func TestNewCertManagerFromPEM_InvalidCert(t *testing.T) {
 				t.Errorf("NewCertManagerFromPEM() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestNewCertManager(t *testing.T) {
+	certPEM, keyPEM, err := GenerateCA("Test Org", 1)
+	if err != nil {
+		t.Fatalf("GenerateCA failed: %v", err)
+	}
+
+	dir := t.TempDir()
+	certPath := dir + "/ca.crt"
+	keyPath := dir + "/ca.key"
+
+	if err := os.WriteFile(certPath, certPEM, 0o600); err != nil {
+		t.Fatalf("write cert: %v", err)
+	}
+	if err := os.WriteFile(keyPath, keyPEM, 0o600); err != nil {
+		t.Fatalf("write key: %v", err)
+	}
+
+	cm, err := NewCertManager(certPath, keyPath)
+	if err != nil {
+		t.Fatalf("NewCertManager failed: %v", err)
+	}
+	if cm.caCert == nil {
+		t.Error("caCert is nil")
+	}
+	if cm.caKey == nil {
+		t.Error("caKey is nil")
+	}
+
+	cert, err := cm.GetCertificateForHost("test.example.com")
+	if err != nil {
+		t.Fatalf("GetCertificateForHost failed: %v", err)
+	}
+	if cert == nil {
+		t.Error("certificate is nil")
+	}
+}
+
+func TestNewCertManager_FileErrors(t *testing.T) {
+	validCert, validKey, _ := GenerateCA("Test", 1)
+	dir := t.TempDir()
+
+	certPath := dir + "/ca.crt"
+	keyPath := dir + "/ca.key"
+	if err := os.WriteFile(certPath, validCert, 0o600); err != nil {
+		t.Fatalf("write cert: %v", err)
+	}
+	if err := os.WriteFile(keyPath, validKey, 0o600); err != nil {
+		t.Fatalf("write key: %v", err)
+	}
+
+	_, err := NewCertManager(dir+"/nonexistent.crt", keyPath)
+	if err == nil {
+		t.Error("expected error for missing cert file")
+	}
+
+	_, err = NewCertManager(certPath, dir+"/nonexistent.key")
+	if err == nil {
+		t.Error("expected error for missing key file")
 	}
 }

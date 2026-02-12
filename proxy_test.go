@@ -2,7 +2,10 @@ package swg
 
 import (
 	"bufio"
+	"bytes"
+	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"io"
 	"log/slog"
@@ -11,9 +14,27 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
+
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
 
 func TestDomainFilter_ShouldBlock(t *testing.T) {
 	filter := NewDomainFilter()
@@ -495,4 +516,514 @@ func TestProxy_TLSInterception(t *testing.T) {
 	// The full MITM test requires client to trust our CA
 	// For unit tests, we verify the proxy handles CONNECT properly
 	t.Log("TLS interception infrastructure verified")
+}
+
+func TestProxy_ServeHTTP_HealthzRouting(t *testing.T) {
+	certPEM, keyPEM, _ := GenerateCA("Test", 1)
+	cm, _ := NewCertManagerFromPEM(certPEM, keyPEM)
+
+	proxy := NewProxy(":0", cm)
+	proxy.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	hc := NewHealthChecker()
+	hc.SetAlive(true)
+	hc.SetReady(true)
+	proxy.HealthChecker = hc
+
+	tests := []struct {
+		name       string
+		path       string
+		wantStatus int
+	}{
+		{"healthz alive", "/healthz", http.StatusOK},
+		{"readyz ready", "/readyz", http.StatusOK},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+			rec := httptest.NewRecorder()
+			proxy.ServeHTTP(rec, req)
+
+			if rec.Code != tt.wantStatus {
+				t.Errorf("expected %d, got %d", tt.wantStatus, rec.Code)
+			}
+			ct := rec.Header().Get("Content-Type")
+			if !strings.Contains(ct, "application/json") {
+				t.Errorf("expected JSON content-type, got %s", ct)
+			}
+		})
+	}
+}
+
+func TestProxy_ServeHTTP_HealthzUnavailable(t *testing.T) {
+	certPEM, keyPEM, _ := GenerateCA("Test", 1)
+	cm, _ := NewCertManagerFromPEM(certPEM, keyPEM)
+
+	proxy := NewProxy(":0", cm)
+	proxy.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	hc := NewHealthChecker()
+	proxy.HealthChecker = hc
+
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rec := httptest.NewRecorder()
+	proxy.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503, got %d", rec.Code)
+	}
+}
+
+func TestProxy_ServeHTTP_ReadyzNotReady(t *testing.T) {
+	certPEM, keyPEM, _ := GenerateCA("Test", 1)
+	cm, _ := NewCertManagerFromPEM(certPEM, keyPEM)
+
+	proxy := NewProxy(":0", cm)
+	proxy.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	hc := NewHealthChecker()
+	proxy.HealthChecker = hc
+
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	rec := httptest.NewRecorder()
+	proxy.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503, got %d", rec.Code)
+	}
+}
+
+func TestProxy_ServeHTTP_HealthzNotRoutedForCONNECT(t *testing.T) {
+	certPEM, keyPEM, _ := GenerateCA("Test", 1)
+	cm, _ := NewCertManagerFromPEM(certPEM, keyPEM)
+
+	proxy := NewProxy(":0", cm)
+	proxy.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	hc := NewHealthChecker()
+	hc.SetAlive(true)
+	proxy.HealthChecker = hc
+
+	req := httptest.NewRequest(http.MethodConnect, "http://example.com:443/healthz", nil)
+	req.Host = "example.com:443"
+	rec := httptest.NewRecorder()
+	proxy.ServeHTTP(rec, req)
+
+	if rec.Code == http.StatusOK {
+		if strings.Contains(rec.Body.String(), `"status"`) {
+			t.Error("CONNECT should not route to healthz handler")
+		}
+	}
+}
+
+func TestProxy_HandleHTTP_WithAccessLog(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer backend.Close()
+
+	certPEM, keyPEM, _ := GenerateCA("Test", 1)
+	cm, _ := NewCertManagerFromPEM(certPEM, keyPEM)
+
+	var logBuf strings.Builder
+	logger := slog.New(slog.NewJSONHandler(&logBuf, nil))
+
+	proxy := NewProxy(":0", cm)
+	proxy.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	proxy.AccessLog = NewAccessLogger(logger)
+
+	backendURL, _ := url.Parse(backend.URL)
+	req := httptest.NewRequest(http.MethodGet, backend.URL+"/test", nil)
+	req.URL = &url.URL{Scheme: "http", Host: backendURL.Host, Path: "/test"}
+	req.Host = backendURL.Host
+
+	rec := httptest.NewRecorder()
+	proxy.handleHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", rec.Code)
+	}
+
+	logOutput := logBuf.String()
+	if !strings.Contains(logOutput, `"method":"GET"`) {
+		t.Error("access log missing method")
+	}
+	if !strings.Contains(logOutput, `"path":"/test"`) {
+		t.Error("access log missing path")
+	}
+	if !strings.Contains(logOutput, `"status":200`) {
+		t.Error("access log missing status code")
+	}
+}
+
+func TestProxy_HandleHTTP_BlockedWithAccessLog(t *testing.T) {
+	certPEM, keyPEM, _ := GenerateCA("Test", 1)
+	cm, _ := NewCertManagerFromPEM(certPEM, keyPEM)
+
+	var logBuf strings.Builder
+	logger := slog.New(slog.NewJSONHandler(&logBuf, nil))
+
+	proxy := NewProxy(":0", cm)
+	proxy.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	proxy.AccessLog = NewAccessLogger(logger)
+
+	filter := NewDomainFilter()
+	filter.AddDomain("blocked.com")
+	proxy.Filter = filter
+
+	req := httptest.NewRequest(http.MethodGet, "http://blocked.com/page", nil)
+	rec := httptest.NewRecorder()
+	proxy.handleHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("expected 403, got %d", rec.Code)
+	}
+
+	logOutput := logBuf.String()
+	if !strings.Contains(logOutput, `"blocked":true`) {
+		t.Error("access log missing blocked field")
+	}
+	if !strings.Contains(logOutput, `"block_reason"`) {
+		t.Error("access log missing block_reason")
+	}
+}
+
+func TestProxy_HandleHTTP_ForwardErrorWithAccessLog(t *testing.T) {
+	certPEM, keyPEM, _ := GenerateCA("Test", 1)
+	cm, _ := NewCertManagerFromPEM(certPEM, keyPEM)
+
+	var logBuf strings.Builder
+	logger := slog.New(slog.NewJSONHandler(&logBuf, nil))
+
+	proxy := NewProxy(":0", cm)
+	proxy.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	proxy.AccessLog = NewAccessLogger(logger)
+	proxy.Transport = &http.Transport{
+		DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
+			return nil, fmt.Errorf("connection refused")
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "http://unreachable.test/page", nil)
+	req.URL = &url.URL{Scheme: "http", Host: "unreachable.test", Path: "/page"}
+	req.Host = "unreachable.test"
+	rec := httptest.NewRecorder()
+	proxy.handleHTTP(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("expected 502, got %d", rec.Code)
+	}
+
+	logOutput := logBuf.String()
+	if !strings.Contains(logOutput, `"error"`) {
+		t.Error("access log missing error field")
+	}
+}
+
+func TestProxy_TLS_FullIntegration(t *testing.T) {
+	backend := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Backend", "reached")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprintf(w, "Hello from TLS backend: %s %s", r.Method, r.URL.Path)
+	}))
+	defer backend.Close()
+
+	certPEM, keyPEM, _ := GenerateCA("Test CA", 1)
+	cm, _ := NewCertManagerFromPEM(certPEM, keyPEM)
+
+	var accessBuf syncBuffer
+	accessLogger := slog.New(slog.NewJSONHandler(&accessBuf, nil))
+
+	backendURL, _ := url.Parse(backend.URL)
+	backendAddr := backendURL.Host
+
+	proxy := NewProxy("127.0.0.1:0", cm)
+	proxy.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	proxy.AccessLog = NewAccessLogger(accessLogger)
+	proxy.Transport = &http.Transport{
+		TLSClientConfig: &tls.Config{
+			InsecureSkipVerify: true,
+		},
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, network, backendAddr)
+		},
+	}
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to create listener: %v", err)
+	}
+	go func() { _ = http.Serve(listener, proxy) }()
+	defer func() { _ = listener.Close() }()
+
+	proxyAddr := listener.Addr().String()
+
+	conn, err := net.DialTimeout("tcp", proxyAddr, 5*time.Second)
+	if err != nil {
+		t.Fatalf("dial proxy: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	_, _ = fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", backendAddr, backendAddr)
+
+	reader := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(reader, nil)
+	if err != nil {
+		t.Fatalf("read CONNECT response: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("CONNECT returned %d", resp.StatusCode)
+	}
+
+	caCertPool := x509.NewCertPool()
+	caCertPool.AppendCertsFromPEM(certPEM)
+
+	tlsConn := tls.Client(conn, &tls.Config{
+		RootCAs:    caCertPool,
+		ServerName: strings.Split(backendAddr, ":")[0],
+	})
+	if err := tlsConn.Handshake(); err != nil {
+		t.Fatalf("TLS handshake: %v", err)
+	}
+
+	reqStr := fmt.Sprintf("GET /test/path HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n", backendAddr)
+	_, err = tlsConn.Write([]byte(reqStr))
+	if err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	tlsReader := bufio.NewReader(tlsConn)
+	tlsResp, err := http.ReadResponse(tlsReader, nil)
+	if err != nil {
+		t.Fatalf("read TLS response: %v", err)
+	}
+	defer func() { _ = tlsResp.Body.Close() }()
+
+	if tlsResp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200, got %d", tlsResp.StatusCode)
+	}
+
+	body, _ := io.ReadAll(tlsResp.Body)
+	if !strings.Contains(string(body), "Hello from TLS backend") {
+		t.Errorf("unexpected body: %s", body)
+	}
+
+	_ = tlsConn.Close()
+	time.Sleep(100 * time.Millisecond)
+
+	accessOutput := accessBuf.String()
+	if !strings.Contains(accessOutput, `"scheme":"https"`) {
+		t.Error("access log missing https scheme")
+	}
+}
+
+func TestProxy_TLS_Blocked(t *testing.T) {
+	certPEM, keyPEM, _ := GenerateCA("Test CA", 1)
+	cm, _ := NewCertManagerFromPEM(certPEM, keyPEM)
+
+	var accessBuf syncBuffer
+	accessLogger := slog.New(slog.NewJSONHandler(&accessBuf, nil))
+
+	proxy := NewProxy("127.0.0.1:0", cm)
+	proxy.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	proxy.AccessLog = NewAccessLogger(accessLogger)
+
+	filter := NewDomainFilter()
+	filter.AddDomain("blocked.test")
+	proxy.Filter = filter
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to create listener: %v", err)
+	}
+	go func() { _ = http.Serve(listener, proxy) }()
+	defer func() { _ = listener.Close() }()
+
+	proxyAddr := listener.Addr().String()
+	conn, err := net.DialTimeout("tcp", proxyAddr, 5*time.Second)
+	if err != nil {
+		t.Fatalf("dial proxy: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	_, _ = fmt.Fprintf(conn, "CONNECT blocked.test:443 HTTP/1.1\r\nHost: blocked.test:443\r\n\r\n")
+
+	reader := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(reader, nil)
+	if err != nil {
+		t.Fatalf("read CONNECT response: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("CONNECT returned %d", resp.StatusCode)
+	}
+
+	caCertPool := x509.NewCertPool()
+	caCertPool.AppendCertsFromPEM(certPEM)
+
+	tlsConn := tls.Client(conn, &tls.Config{
+		RootCAs:    caCertPool,
+		ServerName: "blocked.test",
+	})
+	if err := tlsConn.Handshake(); err != nil {
+		t.Fatalf("TLS handshake: %v", err)
+	}
+
+	reqStr := "GET /page HTTP/1.1\r\nHost: blocked.test\r\nConnection: close\r\n\r\n"
+	_, err = tlsConn.Write([]byte(reqStr))
+	if err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	tlsReader := bufio.NewReader(tlsConn)
+	tlsResp, err := http.ReadResponse(tlsReader, nil)
+	if err != nil {
+		t.Fatalf("read TLS response: %v", err)
+	}
+	defer func() { _ = tlsResp.Body.Close() }()
+
+	if tlsResp.StatusCode != http.StatusForbidden {
+		t.Errorf("expected 403, got %d", tlsResp.StatusCode)
+	}
+
+	_ = tlsConn.Close()
+	time.Sleep(50 * time.Millisecond)
+
+	accessOutput := accessBuf.String()
+	if !strings.Contains(accessOutput, `"blocked":true`) {
+		t.Error("access log missing blocked field for TLS blocked request")
+	}
+}
+
+func TestProxy_TLS_ForwardError(t *testing.T) {
+	certPEM, keyPEM, _ := GenerateCA("Test CA", 1)
+	cm, _ := NewCertManagerFromPEM(certPEM, keyPEM)
+
+	var accessBuf syncBuffer
+	accessLogger := slog.New(slog.NewJSONHandler(&accessBuf, nil))
+
+	proxy := NewProxy("127.0.0.1:0", cm)
+	proxy.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	proxy.AccessLog = NewAccessLogger(accessLogger)
+	proxy.Transport = &http.Transport{
+		DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
+			return nil, fmt.Errorf("connection refused")
+		},
+	}
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to create listener: %v", err)
+	}
+	go func() { _ = http.Serve(listener, proxy) }()
+	defer func() { _ = listener.Close() }()
+
+	proxyAddr := listener.Addr().String()
+	conn, err := net.DialTimeout("tcp", proxyAddr, 5*time.Second)
+	if err != nil {
+		t.Fatalf("dial proxy: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	_, _ = fmt.Fprintf(conn, "CONNECT unreachable.test:443 HTTP/1.1\r\nHost: unreachable.test:443\r\n\r\n")
+
+	reader := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(reader, nil)
+	if err != nil {
+		t.Fatalf("read CONNECT response: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("CONNECT returned %d", resp.StatusCode)
+	}
+
+	caCertPool := x509.NewCertPool()
+	caCertPool.AppendCertsFromPEM(certPEM)
+
+	tlsConn := tls.Client(conn, &tls.Config{
+		RootCAs:    caCertPool,
+		ServerName: "unreachable.test",
+	})
+	if err := tlsConn.Handshake(); err != nil {
+		t.Fatalf("TLS handshake: %v", err)
+	}
+
+	reqStr := "GET /page HTTP/1.1\r\nHost: unreachable.test\r\nConnection: close\r\n\r\n"
+	_, err = tlsConn.Write([]byte(reqStr))
+	if err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	tlsReader := bufio.NewReader(tlsConn)
+	tlsResp, err := http.ReadResponse(tlsReader, nil)
+	if err != nil {
+		t.Fatalf("read TLS response: %v", err)
+	}
+	defer func() { _ = tlsResp.Body.Close() }()
+
+	if tlsResp.StatusCode != http.StatusBadGateway {
+		t.Errorf("expected 502, got %d", tlsResp.StatusCode)
+	}
+
+	_ = tlsConn.Close()
+	time.Sleep(50 * time.Millisecond)
+
+	accessOutput := accessBuf.String()
+	if !strings.Contains(accessOutput, `"error"`) {
+		t.Error("access log missing error field for TLS forward error")
+	}
+}
+
+func TestProxy_ListenAndServe(t *testing.T) {
+	certPEM, keyPEM, _ := GenerateCA("Test", 1)
+	cm, _ := NewCertManagerFromPEM(certPEM, keyPEM)
+
+	proxy := NewProxy("127.0.0.1:0", cm)
+	proxy.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	started := make(chan struct{})
+	origListenAndServe := func() error {
+		l, err := net.Listen("tcp", proxy.Addr)
+		if err != nil {
+			return err
+		}
+		proxy.Addr = l.Addr().String()
+		proxy.listener = l
+		proxy.srv = &http.Server{Handler: proxy}
+		close(started)
+		return proxy.srv.Serve(l)
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- origListenAndServe()
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("server did not start in time")
+	}
+
+	conn, err := net.DialTimeout("tcp", proxy.Addr, time.Second)
+	if err != nil {
+		t.Fatalf("could not connect to proxy: %v", err)
+	}
+	_ = conn.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	if err := proxy.Shutdown(ctx); err != nil {
+		t.Errorf("shutdown error: %v", err)
+	}
+
+	select {
+	case err := <-errCh:
+		if err != nil && err != http.ErrServerClosed {
+			t.Errorf("unexpected serve error: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("server did not stop after Shutdown")
+	}
 }
