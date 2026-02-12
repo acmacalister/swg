@@ -87,6 +87,14 @@ swg/
 ├── pac_test.go         # Tests for PAC functions
 ├── blockpage.go        # Custom block page templates
 ├── blockpage_test.go   # Tests for block page functions
+├── upstream.go         # Upstream proxy chaining + PROXY protocol v1/v2
+├── upstream_test.go    # Tests for upstream proxy functions
+├── connpool.go         # Connection pooling & HTTP/2 transport
+├── connpool_test.go    # Tests for connection pool functions
+├── ratelimit.go        # Per-client token-bucket rate limiter
+├── ratelimit_test.go   # Tests for rate limiter functions
+├── certrotate.go       # Graceful CA certificate rotation
+├── certrotate_test.go  # Tests for cert rotation functions
 ├── config.go           # Viper-based configuration loading
 ├── config_test.go      # Tests for config functions
 ├── .goreleaser.yaml    # GoReleaser configuration
@@ -128,6 +136,9 @@ swg/
 - `PACHandler` - `*PACGenerator` serves `/proxy.pac` (optional)
 - `HealthChecker` - `*HealthChecker` serves `/healthz` and `/readyz` (optional)
 - `AccessLog` - `*AccessLogger` structured access log (optional)
+- `UpstreamProxy` - `*UpstreamProxy` parent proxy chaining (optional)
+- `RateLimiter` - `*RateLimiter` per-client request throttling (optional)
+- `TransportPool` - `*TransportPool` connection-pooled HTTP/2 transport (optional)
 - `Logger` - `*slog.Logger` for logging
 - `Transport` - `http.RoundTripper` for outbound requests
 
@@ -241,6 +252,49 @@ Configuration loading via [viper](https://github.com/spf13/viper):
 - `WatchSIGHUP(proxy, reloadFunc, logger)` - Start goroutine watching SIGHUP
 - `Cancel()` - Stop the watcher
 - `ReloadFunc` - Callback `func(ctx) (Filter, error)` called on each SIGHUP
+
+### `UpstreamProxy` (upstream.go)
+Upstream proxy chaining with PROXY protocol v1/v2 support:
+- `NewUpstreamProxy(rawURL)` - Create from URL string (extracts auth from userinfo)
+- `DialConnect(ctx, network, addr, clientAddr)` - CONNECT tunnel through upstream proxy
+- `Transport(base)` - Returns `http.RoundTripper` for plain HTTP forwarding
+- `ProxyProtocol` field: 0=disabled, 1=v1 (text), 2=v2 (binary)
+- `writeProxyProtocolV1()` / `writeProxyProtocolV2()` - PROXY protocol header writers
+- `bufferedConn` - Wraps `net.Conn` with leftover data from CONNECT handshake
+
+### `TransportPool` (connpool.go)
+Connection pooling & HTTP/2 transport:
+- `NewTransportPool()` - Create with sensible proxy defaults (200 idle conns, HTTP/2 enabled)
+- `Build()` - Create underlying `http.Transport` from config fields
+- `Transport()` - Returns stats-tracking `http.RoundTripper` (auto-builds if needed)
+- `CloseIdleConnections()` - Close idle connections in the pool
+- `Stats()` - Returns `TransportPoolStats` (TotalRequests, ActiveRequests)
+
+**Key Fields:**
+- `MaxIdleConns`, `MaxIdleConnsPerHost`, `MaxConnsPerHost` - Pool sizing
+- `IdleConnTimeout`, `DialTimeout`, `TLSHandshakeTimeout` - Timeouts
+- `EnableHTTP2` - HTTP/2 via ALPN negotiation
+- `TLSConfig` - Custom TLS settings
+- `DisableKeepAlives` - Force fresh connections
+
+### `RateLimiter` (ratelimit.go)
+Per-client token-bucket rate limiter:
+- `NewRateLimiter(rate, burst)` - Create with background cleanup goroutine
+- `Allow(addr)` - Check if request from client IP is allowed
+- `AllowHTTP(w, r)` - HTTP handler wrapper, writes 429 with `Retry-After: 1` if denied
+- `Close()` - Stop cleanup goroutine (idempotent)
+- `ClientCount()` - Number of tracked clients
+- `CleanupInterval` - How often stale buckets are removed (default 1 minute)
+
+### `CertRotator` (certrotate.go)
+Graceful CA certificate rotation:
+- `NewCertRotator(cm, certPath, keyPath)` - Wrap existing CertManager
+- `Rotate()` - Reload CA from disk, swap CertManager atomically
+- `RotateFromPEM(certPEM, keyPEM)` - Rotate from in-memory PEM
+- `GetCertificate(hello)` / `GetCertificateForHost(host)` - Thread-safe delegation
+- `WatchCAFiles(interval)` - Poll file mtimes, auto-rotate on change
+- `OnRotate` / `OnError` - Callbacks for rotation events
+- `CACert()`, `CAKey()`, `CacheSize()` - Thread-safe accessors
 
 **Config Struct Fields:**
 - `Server` - Addr, timeouts

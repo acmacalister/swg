@@ -50,6 +50,20 @@ type Proxy struct {
 	// AccessLog writes structured access log entries for each request (optional)
 	AccessLog *AccessLogger
 
+	// UpstreamProxy forwards requests through a parent proxy (optional).
+	// When set, CONNECT tunnels are established via the upstream proxy
+	// and plain HTTP requests are forwarded through it.
+	UpstreamProxy *UpstreamProxy
+
+	// RateLimiter provides per-client request throttling (optional).
+	// When set, requests exceeding the rate limit receive 429 responses.
+	RateLimiter *RateLimiter
+
+	// TransportPool provides a connection-pooled transport with HTTP/2
+	// support (optional). When set, its Transport() is used as the base
+	// transport instead of the Transport field.
+	TransportPool *TransportPool
+
 	listener net.Listener
 	srv      *http.Server
 }
@@ -119,6 +133,16 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		case "/readyz":
 			p.HealthChecker.HandleReadyz(w, r)
+			return
+		}
+	}
+
+	// Rate limiting
+	if p.RateLimiter != nil {
+		if !p.RateLimiter.AllowHTTP(w, r) {
+			if p.Metrics != nil {
+				p.Metrics.RecordRequest(r.Method, "rate_limited")
+			}
 			return
 		}
 	}
@@ -312,12 +336,27 @@ func (p *Proxy) forwardRequest(req *http.Request) (*http.Response, error) {
 	// Remove hop-by-hop headers
 	removeHopByHopHeaders(outReq.Header)
 
-	transport := p.Transport
-	if transport == nil {
-		transport = http.DefaultTransport
-	}
+	transport := p.transport()
 
 	return transport.RoundTrip(outReq)
+}
+
+// transport returns the effective http.RoundTripper, wrapping the base
+// transport with the upstream proxy transport when configured.
+func (p *Proxy) transport() http.RoundTripper {
+	var base http.RoundTripper
+	switch {
+	case p.TransportPool != nil:
+		base = p.TransportPool.Transport()
+	case p.Transport != nil:
+		base = p.Transport
+	default:
+		base = http.DefaultTransport
+	}
+	if p.UpstreamProxy != nil {
+		return p.UpstreamProxy.Transport(base)
+	}
+	return base
 }
 
 // writeBlockResponse writes a block page response.
@@ -459,10 +498,7 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	outReq := r.Clone(r.Context())
 	removeHopByHopHeaders(outReq.Header)
 
-	transport := p.Transport
-	if transport == nil {
-		transport = http.DefaultTransport
-	}
+	transport := p.transport()
 
 	start := time.Now()
 	resp, err := transport.RoundTrip(outReq)
