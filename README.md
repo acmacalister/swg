@@ -17,6 +17,9 @@ An HTTPS man-in-the-middle (MITM) proxy for content filtering written in Go. SWG
 - **Prometheus Metrics**: Built-in instrumentation for monitoring and alerting
 - **Auto-Reloading Rules**: Load blocklists from CSV, HTTP endpoints, or databases with periodic refresh
 - **Configuration Files**: YAML/JSON/TOML config with environment variable overrides
+- **Health Check Endpoints**: `/healthz` and `/readyz` probes for Kubernetes and load balancers
+- **Structured Access Log**: JSON access log with request metadata, timing, and filter decisions
+- **SIGHUP Reload**: Reload config and filter rules without restarting (`kill -HUP <pid>`)
 - **Cross-Platform**: Runs on Linux, macOS, and Windows
 
 ## Installation
@@ -151,6 +154,10 @@ Usage of swg:
   -print-block-page
         print default block page template and exit
   -v    verbose logging
+  -access-log string
+        access log output: stdout, stderr, or file path (disabled if empty)
+  -healthz
+        enable /healthz and /readyz health endpoints
 ```
 
 ### Examples
@@ -179,6 +186,18 @@ swg -gen-pac -pac-bypass "internal.company.com,*.local"
 
 # Enable Prometheus metrics on /metrics
 swg -block "ads.com" -metrics -v
+
+# Enable health check endpoints
+swg -block "ads.com" -healthz
+
+# Enable structured JSON access log to file
+swg -block "ads.com" -access-log /var/log/swg/access.log
+
+# Access log to stdout (useful in containers)
+swg -block "ads.com" -access-log stdout
+
+# Reload config/rules without restart
+kill -HUP $(pidof swg)
 ```
 
 ### Configuration File
@@ -442,6 +461,59 @@ os.WriteFile("ca.key", keyPEM, 0600)
 // Or use directly
 cm, err := swg.NewCertManagerFromPEM(certPEM, keyPEM)
 ```
+
+### Health Check Endpoints
+
+```go
+health := swg.NewHealthChecker()
+proxy.HealthChecker = health
+
+// Mark alive/ready at appropriate lifecycle points
+health.SetAlive(true)
+health.SetReady(true)
+
+// Add custom readiness checks
+health.ReadinessChecks = append(health.ReadinessChecks, func() error {
+    if !databaseIsReachable() {
+        return errors.New("database unavailable")
+    }
+    return nil
+})
+```
+
+Endpoints return JSON:
+- `GET /healthz` — `{"status":"ok","uptime":"1h30m0s"}`
+- `GET /readyz` — `{"status":"ok","uptime":"1h30m0s"}` or `{"status":"not ready","details":[...]}`
+
+### Structured Access Log
+
+```go
+// Create a JSON access logger writing to a file
+f, _ := os.OpenFile("access.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+alLogger := slog.New(slog.NewJSONHandler(f, nil))
+proxy.AccessLog = swg.NewAccessLogger(alLogger)
+```
+
+Each request produces a JSON log entry with method, host, path, scheme, status code, duration, bytes written, client address, blocked/reason, and user agent.
+
+### SIGHUP Reload
+
+```go
+reloader := swg.WatchSIGHUP(proxy, func(ctx context.Context) (swg.Filter, error) {
+    // Rebuild filter from config, database, etc.
+    cfg, err := swg.LoadConfig("swg.yaml")
+    if err != nil {
+        return nil, err
+    }
+    loader, _ := cfg.BuildRuleLoader()
+    filter := swg.NewReloadableFilter(loader)
+    filter.Load(ctx)
+    return filter, nil
+}, logger)
+defer reloader.Cancel()
+```
+
+Send `SIGHUP` to the process to trigger a filter reload without downtime.
 
 ### Graceful Shutdown
 

@@ -44,6 +44,12 @@ type Proxy struct {
 	// PACHandler serves PAC files at /proxy.pac (optional)
 	PACHandler *PACGenerator
 
+	// HealthChecker provides /healthz and /readyz endpoints (optional)
+	HealthChecker *HealthChecker
+
+	// AccessLog writes structured access log entries for each request (optional)
+	AccessLog *AccessLogger
+
 	listener net.Listener
 	srv      *http.Server
 }
@@ -105,6 +111,16 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if p.Metrics != nil && r.URL.Path == "/metrics" && r.Method != http.MethodConnect {
 		p.Metrics.Handler().ServeHTTP(w, r)
 		return
+	}
+	if p.HealthChecker != nil && r.Method != http.MethodConnect {
+		switch r.URL.Path {
+		case "/healthz":
+			p.HealthChecker.HandleHealthz(w, r)
+			return
+		case "/readyz":
+			p.HealthChecker.HandleReadyz(w, r)
+			return
+		}
 	}
 
 	if r.Method == http.MethodConnect {
@@ -215,6 +231,19 @@ func (p *Proxy) handleTLSConnection(conn *tls.Conn, defaultHost string) {
 					p.Metrics.RecordBlocked(reason)
 				}
 				p.writeBlockResponse(conn, req, reason)
+				if p.AccessLog != nil {
+					p.AccessLog.Log(AccessLogEntry{
+						Timestamp:   time.Now(),
+						Method:      req.Method,
+						Host:        req.Host,
+						Path:        req.URL.Path,
+						Scheme:      req.URL.Scheme,
+						Blocked:     true,
+						BlockReason: reason,
+						ClientAddr:  conn.RemoteAddr().String(),
+						UserAgent:   req.UserAgent(),
+					})
+				}
 				continue
 			}
 		}
@@ -228,6 +257,19 @@ func (p *Proxy) handleTLSConnection(conn *tls.Conn, defaultHost string) {
 				p.Metrics.RecordUpstreamError(req.Host)
 			}
 			p.writeErrorResponse(conn, err)
+			if p.AccessLog != nil {
+				p.AccessLog.Log(AccessLogEntry{
+					Timestamp:  time.Now(),
+					Method:     req.Method,
+					Host:       req.Host,
+					Path:       req.URL.Path,
+					Scheme:     req.URL.Scheme,
+					Duration:   time.Since(start),
+					ClientAddr: conn.RemoteAddr().String(),
+					UserAgent:  req.UserAgent(),
+					Error:      err.Error(),
+				})
+			}
 			continue
 		}
 		if p.Metrics != nil {
@@ -237,6 +279,24 @@ func (p *Proxy) handleTLSConnection(conn *tls.Conn, defaultHost string) {
 		// Write response back to client
 		err = resp.Write(conn)
 		_ = resp.Body.Close()
+		if p.AccessLog != nil {
+			e := AccessLogEntry{
+				Timestamp:    time.Now(),
+				Method:       req.Method,
+				Host:         req.Host,
+				Path:         req.URL.Path,
+				Scheme:       req.URL.Scheme,
+				StatusCode:   resp.StatusCode,
+				Duration:     time.Since(start),
+				BytesWritten: resp.ContentLength,
+				ClientAddr:   conn.RemoteAddr().String(),
+				UserAgent:    req.UserAgent(),
+			}
+			if err != nil {
+				e.Error = err.Error()
+			}
+			p.AccessLog.Log(e)
+		}
 		if err != nil {
 			p.Logger.Debug("write response", "error", err)
 			return
@@ -378,6 +438,19 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(http.StatusForbidden)
 				blockPage.Render(w, data) //nolint:errcheck
 			}
+			if p.AccessLog != nil {
+				p.AccessLog.Log(AccessLogEntry{
+					Timestamp:   time.Now(),
+					Method:      r.Method,
+					Host:        r.Host,
+					Path:        r.URL.Path,
+					Scheme:      r.URL.Scheme,
+					Blocked:     true,
+					BlockReason: reason,
+					ClientAddr:  r.RemoteAddr,
+					UserAgent:   r.UserAgent(),
+				})
+			}
 			return
 		}
 	}
@@ -399,6 +472,19 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 			p.Metrics.RecordUpstreamError(r.Host)
 		}
 		http.Error(w, err.Error(), http.StatusBadGateway)
+		if p.AccessLog != nil {
+			p.AccessLog.Log(AccessLogEntry{
+				Timestamp:  time.Now(),
+				Method:     r.Method,
+				Host:       r.Host,
+				Path:       r.URL.Path,
+				Scheme:     r.URL.Scheme,
+				Duration:   time.Since(start),
+				ClientAddr: r.RemoteAddr,
+				UserAgent:  r.UserAgent(),
+				Error:      err.Error(),
+			})
+		}
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -413,7 +499,21 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	w.WriteHeader(resp.StatusCode)
-	_, _ = io.Copy(w, resp.Body)
+	written, _ := io.Copy(w, resp.Body)
+	if p.AccessLog != nil {
+		p.AccessLog.Log(AccessLogEntry{
+			Timestamp:    time.Now(),
+			Method:       r.Method,
+			Host:         r.Host,
+			Path:         r.URL.Path,
+			Scheme:       r.URL.Scheme,
+			StatusCode:   resp.StatusCode,
+			Duration:     time.Since(start),
+			BytesWritten: written,
+			ClientAddr:   r.RemoteAddr,
+			UserAgent:    r.UserAgent(),
+		})
+	}
 }
 
 // Hop-by-hop headers that should not be forwarded

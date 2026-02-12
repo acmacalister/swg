@@ -68,13 +68,19 @@ goreleaser release --clean
 ```
 swg/
 ├── go.mod              # Module definition (Go 1.25.3)
-├── swg.go              # Package documentation
+├── swg.go              # Package declaration
+├── doc.go              # Package documentation
 ├── certs.go            # CA and certificate management
 ├── certs_test.go       # Tests for certificate functions
 ├── proxy.go            # HTTPS MITM proxy implementation
 ├── proxy_test.go       # Tests for proxy functions
 ├── filter.go           # Rule-based filtering system (RuleSet, loaders)
 ├── filter_test.go      # Tests for filter functions
+├── health.go           # Health check endpoints (/healthz, /readyz)
+├── health_test.go      # Tests for health check functions
+├── accesslog.go        # Structured access log with slog
+├── accesslog_test.go   # Tests for access log functions
+├── reload.go           # SIGHUP signal reload support
 ├── metrics.go          # Prometheus metrics instrumentation
 ├── metrics_test.go     # Tests for metrics functions
 ├── pac.go              # PAC file generator
@@ -120,6 +126,8 @@ swg/
 - `BlockPage` - Custom block page template (optional)
 - `Metrics` - `*Metrics` for Prometheus instrumentation (optional)
 - `PACHandler` - `*PACGenerator` serves `/proxy.pac` (optional)
+- `HealthChecker` - `*HealthChecker` serves `/healthz` and `/readyz` (optional)
+- `AccessLog` - `*AccessLogger` structured access log (optional)
 - `Logger` - `*slog.Logger` for logging
 - `Transport` - `http.RoundTripper` for outbound requests
 
@@ -210,6 +218,30 @@ Configuration loading via [viper](https://github.com/spf13/viper):
 - `DefaultConfig()` - Sensible defaults
 - `WriteExampleConfig(path)` - Generate example YAML
 
+### `HealthChecker` (health.go)
+- `NewHealthChecker()` - Create health checker with start time
+- `SetAlive(bool)` - Mark proxy as alive/not alive
+- `SetReady(bool)` - Mark proxy as ready/not ready
+- `IsAlive()` / `IsReady()` - Check liveness/readiness
+- `HandleHealthz(w, r)` - HTTP handler for `/healthz`
+- `HandleReadyz(w, r)` - HTTP handler for `/readyz`
+- `ReadinessChecks []ReadinessCheck` - Pluggable readiness checks
+
+### `AccessLogger` (accesslog.go)
+- `NewAccessLogger(logger)` - Create access logger wrapping `*slog.Logger`
+- `Log(entry)` - Write an `AccessLogEntry` using `slog.LogAttrs`
+
+**`AccessLogEntry` Fields:**
+- `Timestamp`, `Method`, `Host`, `Path`, `Scheme`
+- `StatusCode`, `Duration`, `BytesWritten`
+- `ClientAddr`, `Blocked`, `BlockReason`
+- `Error`, `UserAgent`
+
+### `SIGHUPReloader` (reload.go)
+- `WatchSIGHUP(proxy, reloadFunc, logger)` - Start goroutine watching SIGHUP
+- `Cancel()` - Stop the watcher
+- `ReloadFunc` - Callback `func(ctx) (Filter, error)` called on each SIGHUP
+
 **Config Struct Fields:**
 - `Server` - Addr, timeouts
 - `TLS` - CA cert/key paths, organization, validity
@@ -264,6 +296,8 @@ regex,.*\.doubleclick\.net.*,ad tracker,ads
 | `-gen-pac` | (none) | Generate PAC file at path and exit |
 | `-pac-bypass` | (none) | Comma-separated domains to bypass in PAC |
 | `-metrics` | false | Enable Prometheus /metrics endpoint |
+| `-access-log` | (none) | Access log output: stdout, stderr, or file path |
+| `-healthz` | false | Enable /healthz and /readyz health endpoints |
 | `-v` | false | Verbose (debug) logging |
 
 ## Testing Patterns

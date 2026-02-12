@@ -128,6 +128,49 @@
 // The Metrics type provides methods for recording requests, blocked
 // connections, certificate cache statistics, filter reloads, and more.
 //
+// # Health Check Endpoints
+//
+// Expose /healthz and /readyz endpoints for Kubernetes and load balancers:
+//
+//	health := swg.NewHealthChecker()
+//	proxy.HealthChecker = health
+//
+//	health.SetAlive(true)
+//	health.SetReady(true)
+//
+// Custom readiness checks verify downstream dependencies:
+//
+//	health.ReadinessChecks = append(health.ReadinessChecks, func() error {
+//	    if !dbPing() {
+//	        return errors.New("database unreachable")
+//	    }
+//	    return nil
+//	})
+//
+// # Structured Access Log
+//
+// Write JSON access log entries for every proxied request:
+//
+//	f, _ := os.OpenFile("access.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+//	alLogger := slog.New(slog.NewJSONHandler(f, nil))
+//	proxy.AccessLog = swg.NewAccessLogger(alLogger)
+//
+// Each entry includes method, host, path, scheme, status code, duration,
+// bytes written, client address, blocked/reason, and user agent.
+//
+// # SIGHUP Reload
+//
+// Reload filter rules on SIGHUP without restarting the proxy:
+//
+//	reloader := swg.WatchSIGHUP(proxy, func(ctx context.Context) (swg.Filter, error) {
+//	    cfg, _ := swg.LoadConfig("swg.yaml")
+//	    loader, _ := cfg.BuildRuleLoader()
+//	    filter := swg.NewReloadableFilter(loader)
+//	    filter.Load(ctx)
+//	    return filter, nil
+//	}, logger)
+//	defer reloader.Cancel()
+//
 // # Configuration
 //
 // Load configuration from YAML, JSON, or TOML files with environment

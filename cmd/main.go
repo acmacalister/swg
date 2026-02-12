@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"flag"
 	"fmt"
@@ -33,6 +34,8 @@ func main() {
 		genPAC         = flag.String("gen-pac", "", "generate PAC file at path and exit")
 		pacBypass      = flag.String("pac-bypass", "", "comma-separated domains to bypass proxy in PAC file")
 		metricsEnabled = flag.Bool("metrics", false, "enable Prometheus /metrics endpoint")
+		accessLogOut   = flag.String("access-log", "", "access log output: stdout, stderr, or file path (disabled if empty)")
+		healthEnabled  = flag.Bool("healthz", false, "enable /healthz and /readyz health endpoints")
 	)
 	flag.Parse()
 
@@ -155,6 +158,35 @@ func main() {
 		logger.Info("prometheus metrics enabled at /metrics")
 	}
 
+	// Set up health check
+	var health *swg.HealthChecker
+	if *healthEnabled {
+		health = swg.NewHealthChecker()
+		proxy.HealthChecker = health
+		logger.Info("health endpoints enabled at /healthz and /readyz")
+	}
+
+	// Set up access log
+	if *accessLogOut != "" {
+		var w *os.File
+		switch *accessLogOut {
+		case "stdout":
+			w = os.Stdout
+		case "stderr":
+			w = os.Stderr
+		default:
+			w, err = os.OpenFile(*accessLogOut, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+			if err != nil {
+				logger.Error("open access log", "error", err, "path", *accessLogOut)
+				os.Exit(1)
+			}
+			defer func() { _ = w.Close() }()
+		}
+		alLogger := slog.New(slog.NewJSONHandler(w, &slog.HandlerOptions{Level: slog.LevelInfo}))
+		proxy.AccessLog = swg.NewAccessLogger(alLogger)
+		logger.Info("access log enabled", "output", *accessLogOut)
+	}
+
 	// Load custom block page if specified
 	if effectiveBlockPageFile != "" {
 		blockPage, err := swg.NewBlockPageFromFile(effectiveBlockPageFile)
@@ -205,6 +237,16 @@ func main() {
 		proxy.Filter = filter
 	}
 
+	if health != nil {
+		health.SetReady(true)
+	}
+
+	// Set up SIGHUP reload
+	reloader := swg.WatchSIGHUP(proxy, func(ctx context.Context) (swg.Filter, error) {
+		return reloadFilter(ctx, *configPath, *blockDomains, logger)
+	}, logger)
+	defer reloader.Cancel()
+
 	// Handle shutdown
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -220,10 +262,55 @@ func main() {
 	logger.Info("configure your system proxy to use this address")
 	logger.Info("ensure the CA certificate is trusted by your system/browser")
 
+	if health != nil {
+		health.SetAlive(true)
+	}
+
 	if err := proxy.ListenAndServe(); err != nil {
 		logger.Error("proxy error", "error", err)
 		os.Exit(1)
 	}
+}
+
+func reloadFilter(ctx context.Context, configPath, blockDomains string, logger *slog.Logger) (swg.Filter, error) {
+	cfg, err := swg.LoadConfig(configPath)
+	if err != nil && configPath != "" {
+		return nil, fmt.Errorf("load config: %w", err)
+	}
+
+	if cfg != nil && cfg.Filter.Enabled {
+		loader, err := cfg.BuildRuleLoader()
+		if err != nil {
+			return nil, fmt.Errorf("build rule loader: %w", err)
+		}
+
+		filter := swg.NewReloadableFilter(loader)
+		if err := filter.Load(ctx); err != nil {
+			return nil, fmt.Errorf("load rules: %w", err)
+		}
+
+		logger.Info("reloaded filter rules", "count", filter.Count())
+		return filter, nil
+	}
+
+	if blockDomains != "" {
+		filter := swg.NewDomainFilter()
+		var buf bytes.Buffer
+		for d := range strings.SplitSeq(blockDomains, ",") {
+			d = strings.TrimSpace(d)
+			if d != "" {
+				filter.AddDomain(d)
+				if buf.Len() > 0 {
+					buf.WriteString(", ")
+				}
+				buf.WriteString(d)
+			}
+		}
+		logger.Info("reloaded domain filter", "domains", buf.String())
+		return filter, nil
+	}
+
+	return nil, nil
 }
 
 func generateCA(certPath, keyPath, org string) error {
