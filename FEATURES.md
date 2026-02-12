@@ -178,9 +178,21 @@ Mutual TLS authentication at the proxy listener level, requiring client certific
 - Cert identity injected into `RequestContext` (CN → Identity, Orgs → Groups, tag `auth=mtls`)
 - Integrates with `Proxy.ClientAuth` field for automatic listener wrapping and identity injection
 
+### Bypass Header/Token
+
+Allow authorized clients to skip content filtering for debugging and operational use.
+
+- `Bypass` struct with configurable HTTP header name (default `X-SWG-Bypass`)
+- Token-based bypass with constant-time comparison to prevent timing attacks
+- Identity-based bypass via `RequestContext` (e.g. mTLS cert CN)
+- `GenerateToken()` creates cryptographically random 32-byte hex tokens
+- Thread-safe token management: `AddToken`, `RemoveToken`, `RevokeAll`
+- Bypass header stripped from forwarded requests to prevent leaking to upstream
+- Checked before `Filter.ShouldBlock` in both HTTPS (handleTLSConnection) and HTTP (handleHTTP) paths
+- Integrates with `Proxy.Bypass` field
+
 ---
 
 ## Planned
 
-### Operational
-- **Bypass header/token** — allow authorized clients to skip filtering for debugging
+_No planned features at this time._

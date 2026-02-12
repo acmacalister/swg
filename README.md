@@ -31,6 +31,7 @@ An HTTPS man-in-the-middle (MITM) proxy for content filtering written in Go. SWG
 - **Rate Limiting**: Per-client token-bucket rate limiter with automatic stale bucket cleanup
 - **Admin API**: REST endpoints for runtime rule CRUD, status inspection, and filter reloads via [chi](https://github.com/go-chi/chi)
 - **mTLS Client Auth**: Mutual TLS authentication requiring client certificates with identity/group extraction
+- **Bypass Token**: Allow authorized clients to skip filtering for debugging via header token or identity
 - **Certificate Rotation**: Hot-swap CA certificates at runtime without proxy restart
 - **Cross-Platform**: Runs on Linux, macOS, and Windows
 
@@ -764,6 +765,32 @@ certPEM, keyPEM, err := swg.GenerateClientCert(
     1,                              // Valid for 1 year
 )
 ```
+
+### Bypass Token
+
+Allow authorized clients to skip content filtering for debugging:
+
+```go
+bypass := swg.NewBypass()
+bypass.AddToken("debug-token-abc123")
+
+// Or generate a cryptographically random token
+tok, _ := bypass.GenerateToken()
+fmt.Println("Generated token:", tok)
+
+// Grant bypass by identity (e.g. from mTLS cert CN)
+bypass.Identities["admin-user"] = true
+
+proxy.Bypass = bypass
+```
+
+Clients set the bypass header to skip filtering:
+
+```bash
+curl -H "X-SWG-Bypass: debug-token-abc123" -x http://proxy:8080 http://blocked-site.com
+```
+
+Tokens are compared using constant-time comparison. The bypass header is stripped before forwarding to upstream.
 
 ### Prometheus Metrics
 

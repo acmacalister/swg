@@ -101,6 +101,8 @@ swg/
 ├── admin_test.go       # Tests for admin API functions
 ├── mtls.go             # mTLS client certificate authentication
 ├── mtls_test.go        # Tests for mTLS functions
+├── bypass.go           # Bypass header/token for authorized filter skipping
+├── bypass_test.go      # Tests for bypass functions
 ├── config.go           # Viper-based configuration loading
 ├── config_test.go      # Tests for config functions
 ├── .goreleaser.yaml    # GoReleaser configuration
@@ -115,7 +117,8 @@ swg/
 │   ├── allowlist/      # Allow-list mode with time-based rules
 │   ├── scanner/        # Response body scanning (AV/DLP)
 │   ├── admin/          # Admin API with runtime rule management
-│   └── mtls/           # mTLS client certificate authentication
+│   ├── mtls/           # mTLS client certificate authentication
+│   └── bypass/         # Bypass token for debugging
 ├── deploy/
 │   ├── kubernetes/     # Raw K8s manifests
 │   └── helm/swg/       # Helm chart
@@ -154,6 +157,7 @@ swg/
 - `Policy` - `*PolicyEngine` lifecycle hooks, identity, and body scanning (optional)
 - `Admin` - `*AdminAPI` REST endpoints for runtime rule management (optional)
 - `ClientAuth` - `*ClientAuth` mTLS client certificate authentication (optional)
+- `Bypass` - `*Bypass` allows authorized clients to skip filtering (optional)
 - `Logger` - `*slog.Logger` for logging
 - `Transport` - `http.RoundTripper` for outbound requests
 
@@ -237,6 +241,21 @@ mTLS client certificate authentication at the proxy listener level:
 
 **Fields:**
 - `IdentityFromCert` - Map cert subject to RequestContext identity/groups (default: true)
+
+### `Bypass` (bypass.go)
+Allows authorized clients to skip content filtering via header token or identity:
+- `NewBypass()` - Create with default header and no tokens
+- `AddToken(token)` - Register a bypass token (thread-safe)
+- `RemoveToken(token)` - Revoke a bypass token (thread-safe)
+- `RevokeAll()` - Remove all bypass tokens (thread-safe)
+- `TokenCount()` - Number of registered tokens
+- `GenerateToken()` - Generate cryptographically random 32-byte hex token
+- `ShouldBypass(req)` - Check header token or identity for bypass
+
+**Fields:**
+- `Header` - HTTP header name (default `X-SWG-Bypass`)
+- `Identities` - Set of identity values granted bypass
+- `Logger` - `*slog.Logger` for bypass events
 
 ### `PACGenerator` (pac.go)
 - `NewPACGenerator(proxyAddr)` - Create PAC generator with defaults

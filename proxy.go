@@ -82,6 +82,12 @@ type Proxy struct {
 	// a trusted CA to connect. See [ClientAuth] for configuration.
 	ClientAuth *ClientAuth
 
+	// Bypass allows authorized clients to skip content filtering.
+	// When set, requests carrying a valid bypass token in an HTTP
+	// header or originating from a whitelisted identity skip the
+	// filter and policy hooks. See [Bypass] for configuration.
+	Bypass *Bypass
+
 	listener net.Listener
 	srv      *http.Server
 }
@@ -307,8 +313,11 @@ func (p *Proxy) handleTLSConnection(conn *tls.Conn, defaultHost string) {
 			req = req.WithContext(WithRequestContext(req.Context(), rc))
 		}
 
+		// Check bypass before filter
+		bypassed := p.Bypass != nil && p.Bypass.ShouldBypass(req)
+
 		// Check filter
-		if p.Filter != nil {
+		if !bypassed && p.Filter != nil {
 			if blocked, reason := p.Filter.ShouldBlock(req); blocked {
 				p.Logger.Info("blocked", "host", req.Host, "path", req.URL.Path, "reason", reason)
 				if p.Metrics != nil {
@@ -529,8 +538,11 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		r = r.WithContext(WithRequestContext(r.Context(), rc))
 	}
 
+	// Check bypass before filter
+	bypassed := p.Bypass != nil && p.Bypass.ShouldBypass(r)
+
 	// Check filter
-	if p.Filter != nil {
+	if !bypassed && p.Filter != nil {
 		if blocked, reason := p.Filter.ShouldBlock(r); blocked {
 			p.Logger.Info("blocked", "url", r.URL, "reason", reason)
 			if p.Metrics != nil {
