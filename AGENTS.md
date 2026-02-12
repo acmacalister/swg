@@ -95,15 +95,21 @@ swg/
 ├── ratelimit_test.go   # Tests for rate limiter functions
 ├── certrotate.go       # Graceful CA certificate rotation
 ├── certrotate_test.go  # Tests for cert rotation functions
+├── policy.go           # Policy engine, lifecycle hooks, identity, scanning
+├── policy_test.go      # Tests for policy engine functions
 ├── config.go           # Viper-based configuration loading
 ├── config_test.go      # Tests for config functions
 ├── .goreleaser.yaml    # GoReleaser configuration
 ├── Dockerfile          # Container image definition
 ├── README.md           # User documentation
+├── FEATURES.md         # Feature roadmap and status
 ├── _examples/          # Example implementations
 │   ├── csv/            # CSV-based blocklist example
 │   ├── config/         # Config file example
-│   └── postgres/       # PostgreSQL blocklist example
+│   ├── postgres/       # PostgreSQL blocklist example
+│   ├── policy/         # Policy engine with identity, groups, scanning
+│   ├── allowlist/      # Allow-list mode with time-based rules
+│   └── scanner/        # Response body scanning (AV/DLP)
 ├── deploy/
 │   ├── kubernetes/     # Raw K8s manifests
 │   └── helm/swg/       # Helm chart
@@ -139,6 +145,7 @@ swg/
 - `UpstreamProxy` - `*UpstreamProxy` parent proxy chaining (optional)
 - `RateLimiter` - `*RateLimiter` per-client request throttling (optional)
 - `TransportPool` - `*TransportPool` connection-pooled HTTP/2 transport (optional)
+- `Policy` - `*PolicyEngine` lifecycle hooks, identity, and body scanning (optional)
 - `Logger` - `*slog.Logger` for logging
 - `Transport` - `http.RoundTripper` for outbound requests
 
@@ -296,6 +303,37 @@ Graceful CA certificate rotation:
 - `OnRotate` / `OnError` - Callbacks for rotation events
 - `CACert()`, `CAKey()`, `CacheSize()` - Thread-safe accessors
 
+### `PolicyEngine` (policy.go)
+Request/response lifecycle hooks with identity resolution and body scanning:
+- `NewPolicyEngine()` - Create with defaults (10 MiB max scan size)
+- `ProcessRequest(ctx, req)` - Resolve identity, run request hooks
+- `ProcessResponse(ctx, req, resp, rc)` - Run response hooks, then body scanners
+
+**Fields:**
+- `RequestHooks []RequestHook` - Pre-filter hooks (identity, access control, tagging)
+- `ResponseHooks []ResponseHook` - Post-upstream hooks (content-type filtering)
+- `IdentityResolver` - Resolves client identity from request
+- `BodyScanners []ResponseBodyScanner` - AV/DLP content inspection
+- `ScanContentTypes []string` - Limit scanning to these MIME prefixes (empty = all)
+- `MaxScanSize int64` - Max bytes to buffer for scanning (default 10 MiB)
+
+**Interfaces:**
+- `RequestHook` / `RequestHookFunc` - `HandleRequest(ctx, req, rc) *http.Response`
+- `ResponseHook` / `ResponseHookFunc` - `HandleResponse(ctx, req, resp, rc) *http.Response`
+- `IdentityResolver` / `IdentityResolverFunc` - `Resolve(req) (identity, groups, error)`
+- `ResponseBodyScanner` / `ResponseBodyScannerFunc` - `Scan(ctx, body, req, resp) (ScanResult, error)`
+
+**Built-in implementations:**
+- `IPIdentityResolver` - Maps IPs/CIDRs to identity/groups (`AddIP`, `AddCIDR`, `Resolve`)
+- `AllowListFilter` - Deny-by-default filter (`AddDomain`, `AddDomains`, `ShouldBlock`)
+- `TimeRule` - Time-windowed filter wrapper (`StartHour`, `EndHour`, `Weekdays`, `Location`)
+- `GroupPolicyFilter` - Per-group filter dispatch (`SetPolicy`, `Default`)
+- `ContentTypeFilter` - Block responses by MIME type (`Block`, `HandleResponse`)
+- `ChainFilter` - Compose multiple filters (`Filters []Filter`, first block wins)
+- `RequestContext` - Carries identity, groups, tags through `context.Context`
+- `ScanVerdict` - `VerdictAllow`, `VerdictBlock`, `VerdictReplace`
+- `ScanResult` - Verdict + optional replacement body and content-type
+
 **Config Struct Fields:**
 - `Server` - Addr, timeouts
 - `TLS` - CA cert/key paths, organization, validity
@@ -391,6 +429,9 @@ See `_examples/` directory:
 - `csv/` - Loading blocklist from CSV file with auto-reload
 - `config/` - Using viper config file with auto-reload
 - `postgres/` - Loading blocklist from PostgreSQL using sqlx
+- `policy/` - Full policy engine: identity resolution, group policies, content-type blocking, body scanning
+- `allowlist/` - Allow-list mode with time-based rules and ChainFilter composition
+- `scanner/` - Response body scanning with AV and DLP scanner implementations
 
 ## Kubernetes Deployment
 

@@ -20,6 +20,16 @@ An HTTPS man-in-the-middle (MITM) proxy for content filtering written in Go. SWG
 - **Health Check Endpoints**: `/healthz` and `/readyz` probes for Kubernetes and load balancers
 - **Structured Access Log**: JSON access log with request metadata, timing, and filter decisions
 - **SIGHUP Reload**: Reload config and filter rules without restarting (`kill -HUP <pid>`)
+- **Policy Engine**: Lifecycle hooks for request/response interception with pluggable identity, group policies, and scanning
+- **Allow-List Mode**: Deny-by-default filtering for kiosk and restricted environments
+- **Time-Based Rules**: Schedule filter activation by hour-of-day and day-of-week with timezone support
+- **Per-User/Group Policies**: Apply different filters based on client identity resolved from IP, CIDR, or custom resolvers
+- **Content-Type Filtering**: Block responses by MIME type (e.g. executable downloads)
+- **Response Body Scanning**: Pluggable AV/DLP scanners with allow, block, and replace verdicts
+- **Upstream Proxy Chaining**: Forward through a parent proxy with CONNECT tunnel and PROXY protocol support
+- **Connection Pooling**: Configurable transport pool with HTTP/2 support and connection statistics
+- **Rate Limiting**: Per-client token-bucket rate limiter with automatic stale bucket cleanup
+- **Certificate Rotation**: Hot-swap CA certificates at runtime without proxy restart
 - **Cross-Platform**: Runs on Linux, macOS, and Windows
 
 ## Installation
@@ -515,6 +525,134 @@ defer reloader.Cancel()
 
 Send `SIGHUP` to the process to trigger a filter reload without downtime.
 
+### Policy Engine
+
+The policy engine provides lifecycle hooks for the full request/response pipeline:
+
+```go
+policy := swg.NewPolicyEngine()
+
+// Resolve client identity from IP ranges
+resolver := swg.NewIPIdentityResolver()
+resolver.AddIP("10.0.0.50", "alice", []string{"engineering"})
+resolver.AddCIDR("192.168.1.0/24", "guest", []string{"guests"})
+policy.IdentityResolver = resolver
+
+// Add request hooks (run before filtering)
+policy.RequestHooks = []swg.RequestHook{
+    swg.RequestHookFunc(func(ctx context.Context, req *http.Request, rc *swg.RequestContext) *http.Response {
+        log.Printf("request from %s (%s)", rc.Identity, rc.ClientIP)
+        rc.Tags["inspected"] = "true"
+        return nil // return non-nil *http.Response to short-circuit
+    }),
+}
+
+proxy.Policy = policy
+```
+
+### Per-User/Group Policies
+
+```go
+groupFilter := swg.NewGroupPolicyFilter()
+
+// Engineering: minimal blocking
+engFilter := swg.NewDomainFilter()
+engFilter.AddDomain("malware.example.com")
+groupFilter.SetPolicy("engineering", engFilter)
+
+// Guests: allow-list mode (deny everything not explicitly permitted)
+guestFilter := swg.NewAllowListFilter()
+guestFilter.AddDomains([]string{"docs.google.com", "*.wikipedia.org"})
+groupFilter.SetPolicy("guests", guestFilter)
+
+// Fallback for unrecognized users
+groupFilter.Default = swg.NewDomainFilter()
+
+proxy.Filter = groupFilter
+```
+
+### Allow-List Mode
+
+```go
+// Deny-by-default: only listed domains are allowed
+allow := swg.NewAllowListFilter()
+allow.AddDomains([]string{
+    "docs.google.com",
+    "*.golang.org",
+    "pkg.go.dev",
+})
+allow.Reason = "domain not on approved list"
+
+proxy.Filter = allow
+```
+
+### Time-Based Rules
+
+```go
+// Block social media Mon-Fri 9am-5pm US Eastern
+eastern, _ := time.LoadLocation("America/New_York")
+socialBlock := swg.NewDomainFilter()
+socialBlock.AddDomains([]string{"twitter.com", "facebook.com", "reddit.com"})
+
+proxy.Filter = &swg.TimeRule{
+    Inner:     socialBlock,
+    StartHour: 9,
+    EndHour:   17,
+    Weekdays:  []time.Weekday{time.Monday, time.Tuesday, time.Wednesday, time.Thursday, time.Friday},
+    Location:  eastern,
+}
+```
+
+### Composing Filters
+
+```go
+// Chain multiple filters — first block wins
+proxy.Filter = &swg.ChainFilter{
+    Filters: []swg.Filter{socialTimeRule, afterHoursBlock, malwareFilter},
+}
+```
+
+### Content-Type Filtering
+
+```go
+// Block executable downloads via ResponseHook
+ctFilter := swg.NewContentTypeFilter()
+ctFilter.Block("application/x-executable", "executable downloads blocked")
+ctFilter.Block("application/x-msdownload", "Windows executables blocked")
+
+policy := swg.NewPolicyEngine()
+policy.ResponseHooks = []swg.ResponseHook{ctFilter}
+proxy.Policy = policy
+```
+
+### Response Body Scanning
+
+```go
+// Implement ResponseBodyScanner for AV/DLP integration
+type AVScanner struct{}
+
+func (s *AVScanner) Scan(ctx context.Context, body []byte, req *http.Request, resp *http.Response) (swg.ScanResult, error) {
+    if isMalware(body) {
+        return swg.ScanResult{Verdict: swg.VerdictBlock, Reason: "malware detected"}, nil
+    }
+    return swg.ScanResult{Verdict: swg.VerdictAllow}, nil
+}
+
+policy := swg.NewPolicyEngine()
+policy.BodyScanners = []swg.ResponseBodyScanner{&AVScanner{}}
+policy.ScanContentTypes = []string{"text/html", "application/json"} // empty = scan all
+policy.MaxScanSize = 10 << 20 // 10 MiB (default)
+proxy.Policy = policy
+```
+
+Scanners return one of three verdicts:
+
+| Verdict | Behavior |
+|---------|----------|
+| `VerdictAllow` | Content passes through unmodified |
+| `VerdictBlock` | Client receives 403 with the reason |
+| `VerdictReplace` | Scanner provides a replacement body (e.g. DLP redaction) |
+
 ### Graceful Shutdown
 
 ```go
@@ -559,25 +697,32 @@ metrics.RecordRequestDuration("GET", 200, duration)
 │ Client  │────▶│   SWG Proxy   │────▶│ Origin Server│
 └─────────┘     └───────────────┘     └──────────────┘
                        │
-                       ▼
-               ┌───────────────┐
-               │ CertManager   │
-               │ (Dynamic TLS) │
-               └───────────────┘
-                       │
-                       ▼
-               ┌───────────────┐
-               │    Filter     │
-               │ (Block/Allow) │
-               └───────────────┘
+                ┌──────┴──────┐
+                ▼             ▼
+         ┌────────────┐ ┌──────────────┐
+         │CertManager │ │ PolicyEngine │
+         │(Dynamic TLS)│ │  (Lifecycle) │
+         └────────────┘ └──────┬───────┘
+                               │
+           ┌───────────────────┼───────────────────┐
+           ▼                   ▼                   ▼
+    ┌──────────────┐   ┌──────────────┐   ┌──────────────┐
+    │  Identity    │   │   Filter     │   │ Body Scanner │
+    │  Resolver    │   │ (Block/Allow)│   │  (AV / DLP)  │
+    └──────────────┘   └──────────────┘   └──────────────┘
 ```
+
+### Request Lifecycle
 
 1. Client sends CONNECT request to proxy
 2. Proxy responds with 200 Connection Established
 3. Proxy performs TLS handshake with client using dynamically generated certificate
-4. Proxy inspects decrypted request and applies filters
-5. If allowed, proxy forwards request to origin server
-6. Response is returned to client through the TLS tunnel
+4. **Policy request hooks** run: identity resolution, access control, tagging
+5. **Filter** checks: domain, URL, regex, allow-list, time-based, group-based
+6. If allowed, proxy forwards request to origin server
+7. **Policy response hooks** run: content-type filtering
+8. **Body scanners** run: AV, DLP, keyword detection
+9. Response is returned to client through the TLS tunnel
 
 ## Security Considerations
 
