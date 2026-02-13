@@ -90,7 +90,7 @@ func TestNewACMECertManager_Validation(t *testing.T) {
 					t.Errorf("unexpected error: %v", err)
 				}
 				if acm != nil {
-					acm.Close()
+					_ = acm.Close()
 				}
 			}
 		})
@@ -112,7 +112,7 @@ func TestACMECertManager_StorageDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewACMECertManager() error = %v", err)
 	}
-	defer acm.Close()
+	defer func() { _ = acm.Close() }()
 
 	// Check directory was created
 	info, err := os.Stat(storagePath)
@@ -153,7 +153,7 @@ func TestACMECertManager_ParseKeyType(t *testing.T) {
 			if err != nil {
 				t.Fatalf("NewACMECertManager() error = %v", err)
 			}
-			defer acm.Close()
+			defer func() { _ = acm.Close() }()
 
 			// Just verify it parses without error
 			_ = acm.parseKeyType()
@@ -175,7 +175,7 @@ func TestACMECertManager_UserPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewACMECertManager() error = %v", err)
 	}
-	defer acm.Close()
+	defer func() { _ = acm.Close() }()
 
 	expectedPath := filepath.Join(tmpDir, "account.json")
 	if got := acm.userPath(); got != expectedPath {
@@ -197,7 +197,7 @@ func TestACMECertManager_CertPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewACMECertManager() error = %v", err)
 	}
-	defer acm.Close()
+	defer func() { _ = acm.Close() }()
 
 	expectedPath := filepath.Join(tmpDir, "certificates", "example.com")
 	if got := acm.certPath("example.com"); got != expectedPath {
@@ -219,7 +219,7 @@ func TestACMECertManager_CacheSize(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewACMECertManager() error = %v", err)
 	}
-	defer acm.Close()
+	defer func() { _ = acm.Close() }()
 
 	if got := acm.CacheSize(); got != 0 {
 		t.Errorf("CacheSize() = %d, want 0", got)
@@ -240,7 +240,7 @@ func TestACMECertManager_GetCertificateForHost_NotConfigured(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewACMECertManager() error = %v", err)
 	}
-	defer acm.Close()
+	defer func() { _ = acm.Close() }()
 
 	// Request cert for unconfigured domain
 	_, err = acm.GetCertificateForHost("other.com")

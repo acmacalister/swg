@@ -100,7 +100,7 @@ type acmeUser struct {
 	Email        string                 `json:"email"`
 	Registration *registration.Resource `json:"registration"`
 	key          crypto.PrivateKey
-	keyPEM       []byte `json:"key_pem"`
+	keyPEM       []byte //nolint:structcheck // used for JSON serialization
 }
 
 func (u *acmeUser) GetEmail() string {

@@ -873,6 +873,40 @@ helm install swg ./deploy/helm/swg -n swg
 
 See [deploy/helm/swg/README.md](deploy/helm/swg/README.md) for configuration options.
 
+## Performance
+
+SWG is designed for high throughput with minimal overhead. Benchmarks run on Apple M4 Pro:
+
+| Operation | Performance | Notes |
+|-----------|-------------|-------|
+| HTTP proxy throughput | ~14,000 req/s | Plain HTTP forwarding |
+| Certificate generation | ~43ms | Per-host, first request only |
+| Certificate cache hit | ~6ns | Subsequent requests |
+| Domain filter (100K rules) | ~40ns | O(1) map lookup |
+| Wildcard filter (10K rules) | ~71µs | Linear scan |
+| Rate limiter check | ~47ns | Per-client token bucket |
+| Gzip compression | 4 GB/s | ~50KB response body |
+| Brotli compression | 292 MB/s | Better ratio, slower |
+
+### Comparison with Other Proxies
+
+Direct benchmarking across MITM proxies is difficult due to differing test methodologies, hardware, and feature sets. For rough reference:
+
+| Proxy | Language | Approx. Throughput | Notes |
+|-------|----------|-------------------|-------|
+| **SWG** | Go | ~14,000 req/s | This project |
+| mitmproxy | Python | ~1,400 req/s | Single-threaded |
+| Traefik | Go | ~26,000 req/s | Reverse proxy (not MITM) |
+| Caddy | Go | ~18,000 req/s | Reverse proxy (not MITM) |
+
+*Note: mitmproxy numbers from [Fluxzy benchmarks](https://www.fluxzy.io/resources/blogs/performance-benchmark-fluxzy-mitmproxy-mitmdump-squid). Traefik/Caddy are reverse proxies without MITM interception, included for Go baseline reference.*
+
+Run benchmarks locally:
+
+```bash
+go test -bench=. -benchmem ./...
+```
+
 ## License
 
 MIT License - see [LICENSE](LICENSE) for details.
