@@ -116,6 +116,8 @@ swg/
 ├── acme_test.go        # Tests for ACME functions
 ├── compress.go         # Response compression (gzip/zstd/brotli)
 ├── compress_test.go    # Tests for compression functions
+├── bodylimit.go        # Request body size limiting
+├── bodylimit_test.go   # Tests for body limit functions
 ├── config.go           # Viper-based configuration loading
 ├── config_test.go      # Tests for config functions
 ├── .goreleaser.yaml    # GoReleaser configuration
@@ -317,6 +319,34 @@ Response compression middleware with gzip/zstd/brotli support:
 - Skips responses with existing `Content-Encoding`
 - Skips responses smaller than `MinSize`
 - Skips non-text content types (images, binaries)
+
+### `BodyLimiter` (bodylimit.go)
+Request body size limiting middleware:
+- `NewBodyLimiter(maxSize)` - Create with simple max size limit
+- `NewBodyLimiterWithConfig(cfg)` - Create with full `BodyLimitConfig`
+- `SetPathLimit(prefix, limit)` - Set per-path size limits
+- `GetPathLimit(path)` - Get effective limit for a path
+- `Check(req)` - Validate request and wrap body with limiting reader
+- `HandleRequest(ctx, req, rc)` - Implements `RequestHook` for PolicyEngine
+- `Middleware(next)` - Standard `http.Handler` middleware
+- `LimitRequestBody(maxSize, next)` - Convenience wrapper function
+
+**Size Constants:**
+- `KB`, `MB`, `GB` - Convenience multipliers (e.g., `10 * MB`)
+
+**`BodyLimitConfig` Fields:**
+- `MaxSize` - Maximum body size in bytes (default: 10 MB)
+- `StreamCheck` - Check Content-Length header first (default: true)
+- `SkipPaths` - URL path prefixes to skip limiting
+- `SkipMethods` - HTTP methods to skip (default: GET, HEAD, OPTIONS, TRACE)
+- `RejectResponse` - Custom 413 response function
+
+**Behavior:**
+- Returns 413 Payload Too Large when limit exceeded
+- Checks Content-Length header first (if StreamCheck enabled)
+- Wraps request body with limiting reader for streaming validation
+- Per-path limits override global limit
+- Integrates with PolicyEngine via `RequestHook` interface
 
 ### `PACGenerator` (pac.go)
 - `NewPACGenerator(proxyAddr)` - Create PAC generator with defaults

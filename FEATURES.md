@@ -218,17 +218,22 @@ On-the-fly compression for responses using modern algorithms.
 - `CompressBytes(data, encoding)` utility for one-off compression
 - Admin API includes chi's compression middleware
 
+### Request Body Size Limits ✅
+Restrict request body size to prevent abuse via large uploads.
+
+- `BodyLimiter` enforces configurable max body size globally or per-path
+- Returns 413 Payload Too Large when exceeded
+- Streaming validation via wrapped `io.ReadCloser` (rejects during read)
+- Optional Content-Length header check for early rejection
+- Per-path limit overrides with `SetPathLimit(prefix, limit)`
+- Configurable skip paths and methods (GET, HEAD, OPTIONS, TRACE skipped by default)
+- Size constants: `KB`, `MB`, `GB` for convenience
+- Integrates with `PolicyEngine` via `RequestHook` interface
+- Standard `http.Handler` middleware via `Middleware()` or `LimitRequestBody()`
+
 ---
 
 ## Planned
-
-### Request Body Size Limits
-Restrict request body size to prevent abuse via large uploads.
-
-- Configurable max body size per route or globally
-- Returns 413 Payload Too Large when exceeded
-- Optional streaming limit (reject early without buffering)
-- Integrates with `PolicyEngine` request hooks
 
 ### Benchmarks
 Comprehensive performance benchmarks and load testing.
