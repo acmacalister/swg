@@ -103,6 +103,8 @@ swg/
 ├── mtls_test.go        # Tests for mTLS functions
 ├── bypass.go           # Bypass header/token for authorized filter skipping
 ├── bypass_test.go      # Tests for bypass functions
+├── acme.go             # ACME/Let's Encrypt certificate management (lego)
+├── acme_test.go        # Tests for ACME functions
 ├── config.go           # Viper-based configuration loading
 ├── config_test.go      # Tests for config functions
 ├── .goreleaser.yaml    # GoReleaser configuration
@@ -118,7 +120,8 @@ swg/
 │   ├── scanner/        # Response body scanning (AV/DLP)
 │   ├── admin/          # Admin API with runtime rule management
 │   ├── mtls/           # mTLS client certificate authentication
-│   └── bypass/         # Bypass token for debugging
+│   ├── bypass/         # Bypass token for debugging
+│   └── acme/           # ACME/Let's Encrypt certificates
 ├── deploy/
 │   ├── kubernetes/     # Raw K8s manifests
 │   └── helm/swg/       # Helm chart
@@ -134,6 +137,34 @@ swg/
 - `GetCertificate(hello)` - For `tls.Config.GetCertificate`
 - `GetCertificateForHost(host)` - Generate/cache cert for hostname
 - `GenerateCA(org, validYears)` - Create new CA cert/key pair
+
+### `ACMECertManager` (acme.go)
+ACME/Let's Encrypt certificate management using [lego](https://github.com/go-acme/lego):
+- `NewACMECertManager(cfg)` - Create from ACMEConfig
+- `Initialize(ctx)` - Set up ACME client and register account
+- `ObtainCertificates(ctx)` - Obtain certificates for configured domains
+- `GetCertificate(hello)` - For `tls.Config.GetCertificate`
+- `GetCertificateForHost(host)` - Get certificate for hostname
+- `StartAutoRenewal(interval)` - Background renewal goroutine
+- `Close()` - Stop background renewal
+- `CacheSize()` - Number of cached certificates
+
+**ACMEConfig Fields:**
+- `Email` - ACME account email (required, for expiration warnings)
+- `Domains` - Domains to obtain certificates for (required)
+- `AcceptTOS` - Accept CA Terms of Service (required, must be true)
+- `CA` - ACME CA directory URL (default: Let's Encrypt production)
+- `KeyType` - Key type: ec256, ec384, rsa2048, rsa4096, rsa8192 (default: ec256)
+- `StoragePath` - Certificate storage directory (default: ./acme)
+- `HTTPPort` - HTTP-01 challenge port (default: 80, 0 to disable)
+- `TLSPort` - TLS-ALPN-01 challenge port (default: 443, 0 to disable)
+- `RenewBefore` - Renew this long before expiration (default: 30 days)
+- `EABKeyID` / `EABMACKey` - External Account Binding (optional, for ZeroSSL)
+
+**Callbacks:**
+- `OnCertObtained func(domain string)` - Called when certificate obtained
+- `OnCertRenewed func(domain string)` - Called when certificate renewed
+- `OnError func(domain string, err error)` - Called on errors
 
 ### `Proxy` (proxy.go)
 - `NewProxy(addr, certManager)` - Create new proxy instance

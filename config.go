@@ -45,10 +45,10 @@ type ServerConfig struct {
 
 // TLSConfig contains TLS/certificate settings.
 type TLSConfig struct {
-	// CACert is the path to the CA certificate file
+	// CACert is the path to the CA certificate file (for self-signed mode)
 	CACert string `mapstructure:"ca_cert"`
 
-	// CAKey is the path to the CA private key file
+	// CAKey is the path to the CA private key file (for self-signed mode)
 	CAKey string `mapstructure:"ca_key"`
 
 	// Organization name for generated certificates
@@ -56,6 +56,10 @@ type TLSConfig struct {
 
 	// CertValidityDays for generated host certificates
 	CertValidityDays int `mapstructure:"cert_validity_days"`
+
+	// ACME configuration for Let's Encrypt certificates (optional)
+	// When enabled, certificates are obtained from Let's Encrypt instead of self-signed.
+	ACME *ACMEConfig `mapstructure:"acme"`
 }
 
 // FilterConfig contains filtering settings.
@@ -384,7 +388,7 @@ server:
   idle_timeout: 60s
 
 tls:
-  # CA certificate and key paths
+  # CA certificate and key paths (for self-signed mode)
   ca_cert: "ca.crt"
   ca_key: "ca.key"
   
@@ -393,6 +397,39 @@ tls:
   
   # Validity period for generated host certificates
   cert_validity_days: 365
+
+  # ACME/Let's Encrypt configuration (optional)
+  # When enabled, certificates are obtained from Let's Encrypt.
+  # This is the recommended approach for production deployments.
+  # acme:
+  #   # Email for ACME account registration and expiration warnings (required)
+  #   email: "admin@example.com"
+  #
+  #   # Accept Let's Encrypt Terms of Service (required)
+  #   accept_tos: true
+  #
+  #   # Domains to obtain certificates for (required)
+  #   domains:
+  #     - "proxy.example.com"
+  #
+  #   # CA directory URL (optional, defaults to Let's Encrypt production)
+  #   # For testing, use: https://acme-staging-v02.api.letsencrypt.org/directory
+  #   # ca: "https://acme-v02.api.letsencrypt.org/directory"
+  #
+  #   # Key type: ec256, ec384, rsa2048, rsa4096 (optional, defaults to ec256)
+  #   # key_type: "ec256"
+  #
+  #   # Storage path for certificates and account data (optional)
+  #   # storage_path: "./acme"
+  #
+  #   # HTTP challenge port (optional, defaults to 80, set to 0 to disable)
+  #   # http_port: 80
+  #
+  #   # TLS-ALPN challenge port (optional, defaults to 443, set to 0 to disable)
+  #   # tls_port: 443
+  #
+  #   # Renew certificates this long before expiration (optional)
+  #   # renew_before: 720h  # 30 days
 
 filter:
   # Enable/disable filtering
