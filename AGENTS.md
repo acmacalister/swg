@@ -2,6 +2,15 @@
 
 Agent instructions for the `swg` Go project - a Secure Web Gateway / HTTPS MITM proxy.
 
+## Requirements
+
+When implementing new features or making changes:
+
+1. **Always write tests** - Every new feature must have corresponding test coverage in a `*_test.go` file
+2. **Verify the build** - Run `go build ./...` to ensure the code compiles
+3. **Pass the linter** - Run `golangci-lint run ./...` and fix all issues before committing
+4. **Run the test suite** - Run `go test ./...` to ensure all tests pass
+
 ## Project Overview
 
 This is a Go module (`github.com/acmacalister/swg`) that provides an HTTPS man-in-the-middle proxy for content filtering. The proxy:
@@ -105,6 +114,8 @@ swg/
 ├── bypass_test.go      # Tests for bypass functions
 ├── acme.go             # ACME/Let's Encrypt certificate management (lego)
 ├── acme_test.go        # Tests for ACME functions
+├── compress.go         # Response compression (gzip/zstd/brotli)
+├── compress_test.go    # Tests for compression functions
 ├── config.go           # Viper-based configuration loading
 ├── config_test.go      # Tests for config functions
 ├── .goreleaser.yaml    # GoReleaser configuration
@@ -287,6 +298,25 @@ Allows authorized clients to skip content filtering via header token or identity
 - `Header` - HTTP header name (default `X-SWG-Bypass`)
 - `Identities` - Set of identity values granted bypass
 - `Logger` - `*slog.Logger` for bypass events
+
+### `CompressHandler` (compress.go)
+Response compression middleware with gzip/zstd/brotli support:
+- `NewCompressHandler(next)` - Create with default config (256 byte min, br > zstd > gzip)
+- `NewCompressHandlerWithConfig(next, cfg)` - Create with custom `CompressionConfig`
+- `CompressBytes(data, encoding)` - One-off compression utility function
+- `DefaultCompressionConfig()` - Returns sensible defaults
+
+**`CompressionConfig` Fields:**
+- `MinSize` - Minimum response size to compress (default: 256 bytes)
+- `PreferOrder` - Encoding preference order (default: `[]string{"br", "zstd", "gzip"}`)
+- `ContentTypes` - MIME type prefixes to compress (default: text/*, application/json, etc.)
+
+**Behavior:**
+- Negotiates encoding from `Accept-Encoding` header
+- Adds `Vary: Accept-Encoding` for cache correctness
+- Skips responses with existing `Content-Encoding`
+- Skips responses smaller than `MinSize`
+- Skips non-text content types (images, binaries)
 
 ### `PACGenerator` (pac.go)
 - `NewPACGenerator(proxyAddr)` - Create PAC generator with defaults

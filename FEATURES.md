@@ -191,8 +191,87 @@ Allow authorized clients to skip content filtering for debugging and operational
 - Checked before `Filter.ShouldBlock` in both HTTPS (handleTLSConnection) and HTTP (handleHTTP) paths
 - Integrates with `Proxy.Bypass` field
 
+### ACME/Let's Encrypt Certificates ✅
+
+Automatic certificate provisioning from Let's Encrypt using the ACME protocol via [lego](https://github.com/go-acme/lego).
+
+- `ACMECertManager` for automatic certificate obtain and renewal
+- Caddy-style configuration with email-based setup
+- HTTP-01 and TLS-ALPN-01 challenge support
+- Automatic renewal with configurable interval (default: 30 days before expiry)
+- Persistent storage of certificates and account data
+- External Account Binding (EAB) support for ZeroSSL and other CAs
+- Staging environment support for testing without rate limits
+- Key type selection: EC256, EC384, RSA2048, RSA4096, RSA8192
+- Callbacks for certificate events: `OnCertObtained`, `OnCertRenewed`, `OnError`
+
+### Response Compression ✅
+On-the-fly compression for responses using modern algorithms.
+
+- `CompressHandler` wraps `http.Handler` with transparent compression
+- Gzip, Zstandard (zstd), and Brotli encoding support
+- `Accept-Encoding` header negotiation with preference order: br > zstd > gzip
+- Automatic content-type detection (compresses text/*, application/json, application/xml, etc.)
+- Configurable minimum size threshold (default: 256 bytes)
+- Adds `Vary: Accept-Encoding` header for cache correctness
+- Skips already-encoded responses (Content-Encoding present)
+- `CompressBytes(data, encoding)` utility for one-off compression
+- Admin API includes chi's compression middleware
+
 ---
 
 ## Planned
 
-_No planned features at this time._
+### Request Body Size Limits
+Restrict request body size to prevent abuse via large uploads.
+
+- Configurable max body size per route or globally
+- Returns 413 Payload Too Large when exceeded
+- Optional streaming limit (reject early without buffering)
+- Integrates with `PolicyEngine` request hooks
+
+### Benchmarks
+Comprehensive performance benchmarks and load testing.
+
+- `BenchmarkProxyHTTP` — plain HTTP throughput
+- `BenchmarkProxyHTTPS` — HTTPS with cert generation
+- `BenchmarkCertGeneration` — per-host certificate generation time
+- `BenchmarkRuleSetMatch` — filter matching at scale (1K, 10K, 100K rules)
+- `BenchmarkRateLimiter` — token bucket performance
+- `BenchmarkConcurrentConnections` — parallel connection handling
+- Load testing scripts with `wrk`, `hey`, or `vegeta`
+
+### OpenTelemetry Tracing
+Distributed tracing for request flows beyond Prometheus metrics.
+
+- Trace context propagation (W3C Trace Context)
+- Span creation for proxy lifecycle stages
+- Integration with Jaeger, Zipkin, OTLP exporters
+- Configurable sampling rates
+- Request/response attribute capture
+
+### DNS-01 ACME Challenge
+DNS-based ACME challenge for environments without exposed ports 80/443.
+
+- DNS provider integrations via `libdns` ecosystem
+- Support for Cloudflare, Route53, Google Cloud DNS, DigitalOcean, etc.
+- Wildcard certificate support (requires DNS-01)
+- Configurable propagation timeout and polling interval
+
+### HTTP/3 Listener
+QUIC/HTTP3 support for the proxy's client-facing listener.
+
+- Faster connection establishment (0-RTT)
+- Better multiplexing without head-of-line blocking
+- Connection migration for mobile clients
+- Falls back to HTTP/2 for incompatible clients
+- Note: MITM interception of HTTP/3 traffic not planned (falls back to HTTP/2)
+
+### CEL Expression Matchers
+Common Expression Language for advanced rule evaluation.
+
+- Powerful boolean expressions beyond regex
+- Access to request headers, path, method, client IP, identity
+- Examples: `request.header["X-Custom"] == "value" && request.path.startsWith("/api")`
+- Composable with existing filter types
+- Precompiled expressions for performance

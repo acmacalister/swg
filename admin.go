@@ -53,6 +53,7 @@ func NewAdminAPI(proxy *Proxy) *AdminAPI {
 func (a *AdminAPI) buildRouter() {
 	r := chi.NewRouter()
 	r.Use(middleware.SetHeader("Content-Type", "application/json"))
+	r.Use(middleware.Compress(5)) // Enable gzip compression
 
 	r.Get("/status", a.handleStatus)
 	r.Get("/rules", a.handleListRules)
