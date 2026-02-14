@@ -26,63 +26,129 @@ import (
 	"github.com/go-acme/lego/v4/registration"
 )
 
-// ACME CA directory URLs.
+// ACME CA directory URLs for use with [ACMEConfig].CA.
+//
+// LetsEncryptProduction is the default when CA is empty. Use
+// LetsEncryptStaging during development and testing to avoid
+// Let's Encrypt production rate limits (5 duplicate certificates
+// per week, 50 certificates per registered domain per week).
 const (
 	LetsEncryptProduction = lego.LEDirectoryProduction
 	LetsEncryptStaging    = lego.LEDirectoryStaging
 )
 
-// ACMEConfig contains ACME/Let's Encrypt configuration.
-// Configuration style follows Caddy server patterns.
+// ACMEConfig holds the configuration for obtaining and renewing TLS
+// certificates via the ACME protocol (RFC 8555). It is the sole input to
+// [NewACMECertManager].
+//
+// At minimum you must set [ACMEConfig.Email], [ACMEConfig.Domains], and
+// [ACMEConfig.AcceptTOS]. All other fields have sensible defaults provided
+// by [DefaultACMEConfig].
+//
+// # Challenge Types
+//
+// The ACME protocol verifies domain ownership through challenge types.
+// ACMEConfig supports two:
+//
+//   - HTTP-01 — The CA makes an HTTP request to port 80 on the domain.
+//     Controlled by [ACMEConfig.HTTPPort]. Set to 0 to disable.
+//   - TLS-ALPN-01 — The CA performs a TLS handshake on port 443 using a
+//     special ALPN protocol. Controlled by [ACMEConfig.TLSPort]. Set to 0
+//     to disable.
+//
+// At least one challenge type must remain enabled. Both ports must be
+// reachable from the public internet for the challenge to succeed.
+//
+// # External Account Binding (EAB)
+//
+// Some CAs (ZeroSSL, Google Trust Services, Buypass Go) require External
+// Account Binding. Set [ACMEConfig.EABKeyID] and [ACMEConfig.EABMACKey] to
+// the values provided by the CA's dashboard.
+//
+// # Storage Layout
+//
+// Certificates, private keys, and account data are persisted under
+// [ACMEConfig.StoragePath] (default "./acme"):
+//
+//	<StoragePath>/
+//	├── account.json                     # ACME account + private key
+//	└── certificates/
+//	    └── <domain>/
+//	        ├── certificate.pem          # Leaf + intermediates
+//	        ├── private_key.pem          # Certificate private key
+//	        ├── issuer.pem               # Issuer certificate
+//	        └── metadata.json            # Domain, URL, timestamp
+//
+// All files are created with mode 0600/0700 so only the process owner can
+// read them.
 type ACMEConfig struct {
-	// Email is used for ACME account registration and certificate notifications.
-	// Highly recommended to set this for certificate expiration warnings.
+	// Email is the address registered with the ACME account. The CA sends
+	// certificate expiration warnings here. Required.
 	Email string `mapstructure:"email"`
 
-	// CA is the ACME CA directory URL.
-	// Defaults to Let's Encrypt production.
-	// For testing, use LetsEncryptStaging to avoid rate limits.
+	// CA is the ACME directory URL. Defaults to [LetsEncryptProduction].
+	// Use [LetsEncryptStaging] during development to avoid rate limits.
+	// Any RFC 8555-compliant CA directory URL is accepted (e.g. ZeroSSL,
+	// Buypass, Google Trust Services).
 	CA string `mapstructure:"ca"`
 
-	// KeyType is the type of key to generate for certificates.
-	// Supported: "ec256", "ec384", "rsa2048", "rsa4096", "rsa8192"
-	// Defaults to "ec256" (recommended).
+	// KeyType selects the private key algorithm for issued certificates.
+	// Supported values:
+	//
+	//   - "ec256"   — ECDSA P-256 (default, recommended)
+	//   - "ec384"   — ECDSA P-384
+	//   - "rsa2048" — RSA 2048-bit
+	//   - "rsa4096" — RSA 4096-bit
+	//   - "rsa8192" — RSA 8192-bit
+	//
+	// ECDSA keys produce smaller certificates and faster TLS handshakes.
 	KeyType string `mapstructure:"key_type"`
 
-	// StoragePath is where certificates and account data are stored.
-	// Defaults to "./acme" in the current directory.
+	// StoragePath is the directory where account data and certificates are
+	// persisted. The directory is created automatically with mode 0700.
+	// Defaults to "./acme".
 	StoragePath string `mapstructure:"storage_path"`
 
-	// HTTPPort is the port to use for HTTP-01 challenges.
-	// Defaults to 80. Set to 0 to disable HTTP-01 challenge.
+	// HTTPPort is the listen port for HTTP-01 ACME challenges.
+	// Defaults to 80. Set to 0 to disable the HTTP-01 challenge solver.
 	HTTPPort int `mapstructure:"http_port"`
 
-	// TLSPort is the port to use for TLS-ALPN-01 challenges.
-	// Defaults to 443. Set to 0 to disable TLS-ALPN-01 challenge.
+	// TLSPort is the listen port for TLS-ALPN-01 ACME challenges.
+	// Defaults to 443. Set to 0 to disable the TLS-ALPN-01 challenge solver.
 	TLSPort int `mapstructure:"tls_port"`
 
-	// RenewBefore specifies how long before expiration to renew certificates.
-	// Defaults to 30 days.
+	// RenewBefore is how far in advance of expiration the certificate is
+	// renewed during auto-renewal. Defaults to 30 days. Let's Encrypt
+	// certificates are valid for 90 days, so 30 days gives two retry
+	// windows.
 	RenewBefore time.Duration `mapstructure:"renew_before"`
 
-	// Domains is the list of domains to obtain certificates for.
-	// At least one domain is required.
+	// Domains lists the fully-qualified domain names for which
+	// certificates will be obtained. At least one is required. Each
+	// domain receives its own certificate (no SANs across entries).
 	Domains []string `mapstructure:"domains"`
 
-	// AcceptTOS indicates acceptance of the CA's Terms of Service.
-	// Must be true to obtain certificates.
+	// AcceptTOS must be set to true to indicate acceptance of the CA's
+	// Terms of Service. [NewACMECertManager] returns an error if false.
 	AcceptTOS bool `mapstructure:"accept_tos"`
 
-	// EABKeyID is the External Account Binding key ID (optional).
-	// Required by some CAs like ZeroSSL.
+	// EABKeyID is the External Account Binding key identifier.
+	// Required only for CAs that mandate EAB (e.g. ZeroSSL).
 	EABKeyID string `mapstructure:"eab_key_id"`
 
-	// EABMACKey is the External Account Binding MAC key (optional).
-	// Required by some CAs like ZeroSSL.
+	// EABMACKey is the base64url-encoded HMAC key for EAB.
+	// Required only for CAs that mandate EAB (e.g. ZeroSSL).
 	EABMACKey string `mapstructure:"eab_mac_key"`
 }
 
-// DefaultACMEConfig returns an ACMEConfig with sensible defaults.
+// DefaultACMEConfig returns an [ACMEConfig] populated with production-ready
+// defaults. The caller must still set Email, Domains, and AcceptTOS before
+// passing the config to [NewACMECertManager].
+//
+//	cfg := swg.DefaultACMEConfig()
+//	cfg.Email     = "admin@example.com"
+//	cfg.Domains   = []string{"proxy.example.com"}
+//	cfg.AcceptTOS = true
 func DefaultACMEConfig() ACMEConfig {
 	return ACMEConfig{
 		CA:          LetsEncryptProduction,
@@ -115,7 +181,66 @@ func (u *acmeUser) GetPrivateKey() crypto.PrivateKey {
 	return u.key
 }
 
-// ACMECertManager manages Let's Encrypt certificates for MITM proxying.
+// ACMECertManager obtains and renews TLS certificates from an ACME CA such
+// as Let's Encrypt. It implements the same GetCertificate / GetCertificateForHost
+// surface as [CertManager], so it can be used with [tls.Config.GetCertificate]
+// or anywhere a per-host certificate provider is needed.
+//
+// # Lifecycle
+//
+// The typical usage follows four steps:
+//
+//  1. Create — [NewACMECertManager] validates the config and creates the
+//     on-disk storage directory.
+//  2. Initialize — [ACMECertManager.Initialize] registers (or loads) the ACME
+//     account, configures challenge solvers, and loads any previously obtained
+//     certificates from disk.
+//  3. Obtain — [ACMECertManager.ObtainCertificates] contacts the CA and
+//     obtains certificates for every domain in the config.
+//  4. Renew — [ACMECertManager.StartAutoRenewal] spawns a background
+//     goroutine that periodically checks certificate expiration and renews
+//     before the RenewBefore window.
+//
+// Call [ACMECertManager.Close] to stop the renewal goroutine and release
+// resources.
+//
+// # Callbacks
+//
+// Three optional callbacks are available for observability:
+//
+//   - OnCertObtained — fired after a certificate is successfully obtained.
+//   - OnCertRenewed  — fired after a certificate is successfully renewed.
+//   - OnError        — fired when obtaining or renewing a certificate fails.
+//
+// # Thread Safety
+//
+// All public methods are safe for concurrent use. The certificate cache is
+// protected by an internal sync.RWMutex.
+//
+// # Example
+//
+//	acm, err := swg.NewACMECertManager(swg.ACMEConfig{
+//	    Email:     "admin@example.com",
+//	    Domains:   []string{"proxy.example.com"},
+//	    AcceptTOS: true,
+//	    CA:        swg.LetsEncryptStaging, // use staging for testing
+//	})
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+//	defer acm.Close()
+//
+//	if err := acm.Initialize(ctx); err != nil {
+//	    log.Fatal(err)
+//	}
+//	if err := acm.ObtainCertificates(ctx); err != nil {
+//	    log.Fatal(err)
+//	}
+//	acm.StartAutoRenewal(12 * time.Hour)
+//
+//	srv := &http.Server{
+//	    TLSConfig: &tls.Config{GetCertificate: acm.GetCertificate},
+//	}
 type ACMECertManager struct {
 	config ACMEConfig
 	user   *acmeUser
@@ -131,13 +256,23 @@ type ACMECertManager struct {
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 
-	// Callbacks
+	// OnCertObtained is called after a new certificate is obtained for a
+	// domain. It is called from the goroutine that performed the obtain.
 	OnCertObtained func(domain string)
-	OnCertRenewed  func(domain string)
-	OnError        func(domain string, err error)
+
+	// OnCertRenewed is called after an existing certificate is renewed.
+	OnCertRenewed func(domain string)
+
+	// OnError is called when obtaining or renewing a certificate fails.
+	OnError func(domain string, err error)
 }
 
-// NewACMECertManager creates a new ACMECertManager with the given configuration.
+// NewACMECertManager validates cfg and returns a new [ACMECertManager].
+// It creates the storage directory specified by [ACMEConfig.StoragePath] but
+// does not contact the CA — call [ACMECertManager.Initialize] next.
+//
+// Returns an error if Email is empty, Domains is empty, or AcceptTOS is
+// false.
 func NewACMECertManager(cfg ACMEConfig) (*ACMECertManager, error) {
 	if cfg.Email == "" {
 		return nil, errors.New("acme: email is required")
@@ -181,12 +316,25 @@ func NewACMECertManager(cfg ACMEConfig) (*ACMECertManager, error) {
 	return acm, nil
 }
 
-// SetLogger sets the logger for the ACMECertManager.
+// SetLogger replaces the default [slog.Default] logger used by the
+// ACMECertManager. Call this before [ACMECertManager.Initialize] to capture
+// all log output.
 func (acm *ACMECertManager) SetLogger(logger *slog.Logger) {
 	acm.logger = logger
 }
 
-// Initialize sets up the ACME client and loads/registers the account.
+// Initialize creates the lego ACME client, configures the HTTP-01 and
+// TLS-ALPN-01 challenge providers, and either loads an existing account
+// from disk or registers a new one with the CA.
+//
+// On first run the account private key is generated and persisted at
+// <StoragePath>/account.json. Subsequent calls load the existing key.
+//
+// If [ACMEConfig.EABKeyID] and [ACMEConfig.EABMACKey] are set, External
+// Account Binding is used during registration.
+//
+// Any certificates previously stored on disk are loaded into the in-memory
+// cache so they are available immediately without contacting the CA.
 func (acm *ACMECertManager) Initialize(ctx context.Context) error {
 	// Load or create user
 	user, err := acm.loadOrCreateUser()
@@ -255,7 +403,16 @@ func (acm *ACMECertManager) Initialize(ctx context.Context) error {
 	return nil
 }
 
-// ObtainCertificates obtains certificates for all configured domains.
+// ObtainCertificates iterates over every domain in [ACMEConfig.Domains]
+// and obtains a certificate from the CA. If a valid certificate already
+// exists in the cache and is not within the RenewBefore window, the domain
+// is skipped.
+//
+// Certificates are persisted to disk under <StoragePath>/certificates/<domain>/.
+// The [ACMECertManager.OnCertObtained] callback is invoked for each newly
+// obtained certificate.
+//
+// Returns the first error encountered; remaining domains are not attempted.
 func (acm *ACMECertManager) ObtainCertificates(ctx context.Context) error {
 	for _, domain := range acm.config.Domains {
 		if err := acm.obtainCertificate(ctx, domain); err != nil {
@@ -318,8 +475,16 @@ func (acm *ACMECertManager) obtainCertificate(ctx context.Context, domain string
 	return nil
 }
 
-// GetCertificate returns a TLS certificate for the given host.
-// This is suitable for use as tls.Config.GetCertificate.
+// GetCertificate returns a TLS certificate for the SNI host name in hello.
+// It is intended for use as [tls.Config].GetCertificate:
+//
+//	srv := &http.Server{
+//	    TLSConfig: &tls.Config{
+//	        GetCertificate: acm.GetCertificate,
+//	    },
+//	}
+//
+// Returns an error if the ClientHelloInfo contains no SNI server name.
 func (acm *ACMECertManager) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
 	host := hello.ServerName
 	if host == "" {
@@ -328,7 +493,11 @@ func (acm *ACMECertManager) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Cer
 	return acm.GetCertificateForHost(host)
 }
 
-// GetCertificateForHost returns a TLS certificate for the given hostname.
+// GetCertificateForHost returns the cached TLS certificate for host. If the
+// certificate is not in the cache but the host is one of the configured
+// [ACMEConfig.Domains], an on-demand obtain is attempted.
+//
+// Returns an error if the host is not in the configured domain list.
 func (acm *ACMECertManager) GetCertificateForHost(host string) (*tls.Certificate, error) {
 	acm.mu.RLock()
 	cert, ok := acm.certs[host]
@@ -357,8 +526,14 @@ func (acm *ACMECertManager) GetCertificateForHost(host string) (*tls.Certificate
 	return nil, fmt.Errorf("acme: no certificate for host %s", host)
 }
 
-// StartAutoRenewal starts a background goroutine that renews certificates
-// before they expire.
+// StartAutoRenewal spawns a background goroutine that checks all cached
+// certificates at the given interval and renews any that will expire within
+// the [ACMEConfig.RenewBefore] window.
+//
+// If checkInterval is zero it defaults to 12 hours. A typical production
+// value is 12*time.Hour, which balances CA load against timely renewal.
+//
+// The goroutine is stopped when [ACMECertManager.Close] is called.
 func (acm *ACMECertManager) StartAutoRenewal(checkInterval time.Duration) {
 	if checkInterval == 0 {
 		checkInterval = 12 * time.Hour
@@ -420,14 +595,16 @@ func (acm *ACMECertManager) renewExpiring() {
 	}
 }
 
-// Close stops background renewal and releases resources.
+// Close stops the auto-renewal goroutine (if running) and waits for it to
+// exit. It is safe to call Close multiple times.
 func (acm *ACMECertManager) Close() error {
 	acm.cancel()
 	acm.wg.Wait()
 	return nil
 }
 
-// CacheSize returns the number of cached certificates.
+// CacheSize returns the number of certificates currently held in the
+// in-memory cache.
 func (acm *ACMECertManager) CacheSize() int {
 	acm.mu.RLock()
 	defer acm.mu.RUnlock()

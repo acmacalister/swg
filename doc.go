@@ -184,6 +184,44 @@
 //	rs, err := cfg.BuildRuleSet()
 //	proxy.Filter = rs
 //
+// # ACME / Let's Encrypt Certificates
+//
+// Use [ACMECertManager] to obtain and automatically renew TLS certificates
+// from Let's Encrypt or any RFC 8555-compliant CA, eliminating the need to
+// manage a self-signed CA for the proxy's own listener certificate:
+//
+//	acm, err := swg.NewACMECertManager(swg.ACMEConfig{
+//	    Email:     "admin@example.com",
+//	    Domains:   []string{"proxy.example.com"},
+//	    AcceptTOS: true,
+//	    CA:        swg.LetsEncryptStaging,
+//	})
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+//	defer acm.Close()
+//
+//	ctx := context.Background()
+//	if err := acm.Initialize(ctx); err != nil {
+//	    log.Fatal(err)
+//	}
+//	if err := acm.ObtainCertificates(ctx); err != nil {
+//	    log.Fatal(err)
+//	}
+//	acm.StartAutoRenewal(12 * time.Hour)
+//
+// The manager persists account data and certificates to disk so restarts
+// do not re-issue certificates. Combine with a self-signed [CertManager]
+// for MITM per-host certificates while using ACME for the proxy's own
+// listener TLS:
+//
+//	srv := &http.Server{
+//	    TLSConfig: &tls.Config{GetCertificate: acm.GetCertificate},
+//	}
+//
+// See [ACMEConfig] for the full set of configuration fields including
+// challenge ports, key types, External Account Binding, and renewal timing.
+//
 // # CA Certificate Generation
 //
 // Generate a new CA certificate and key pair programmatically:

@@ -1,27 +1,38 @@
-// Example: Using SWG with Let's Encrypt (ACME) certificates
+// Example: SWG proxy with ACME / Let's Encrypt certificates
 //
-// This example demonstrates obtaining and auto-renewing certificates from
-// Let's Encrypt using the ACME protocol. No self-signed CA required!
+// This example shows how to combine an ACME-managed listener certificate
+// (for the proxy's own TLS) with a self-signed CA CertManager (for MITM
+// per-host certificate generation). The result is a proxy whose clients
+// see a valid, publicly-trusted certificate when connecting, while
+// intercepted upstream connections use dynamically generated certificates
+// signed by the local CA.
 //
 // Prerequisites:
-//   - Domain name pointing to this server
-//   - Ports 80 and 443 accessible from the internet (for ACME challenges)
+//   - A public DNS A/AAAA record pointing to this server.
+//   - Ports 80 and 443 reachable from the internet (ACME challenges).
+//   - A self-signed CA cert/key pair (generate with: go run ../../cmd -gen-ca).
 //
 // Usage:
 //
-//	# For testing, use staging to avoid rate limits
+//	# Staging (recommended for testing — avoids Let's Encrypt rate limits):
 //	go run . -email admin@example.com -domain proxy.example.com -staging
 //
-//	# For production
+//	# Production:
 //	go run . -email admin@example.com -domain proxy.example.com
+//
+//	# With ZeroSSL (requires External Account Binding):
+//	go run . -email admin@example.com -domain proxy.example.com \
+//	    -eab-kid <key-id> -eab-hmac <hmac-key>
 package main
 
 import (
 	"context"
 	"crypto/tls"
 	"flag"
+	"fmt"
 	"log"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -32,13 +43,18 @@ import (
 )
 
 func main() {
-	email := flag.String("email", "", "email for ACME account (required)")
+	email := flag.String("email", "", "ACME account email (required)")
 	domain := flag.String("domain", "", "domain to obtain certificate for (required)")
 	staging := flag.Bool("staging", false, "use Let's Encrypt staging environment")
-	storagePath := flag.String("storage", "./acme", "path to store certificates")
-	httpPort := flag.Int("http-port", 80, "port for HTTP-01 challenge (0 to disable)")
-	tlsPort := flag.Int("tls-port", 443, "port for TLS-ALPN-01 challenge (0 to disable)")
+	storagePath := flag.String("storage", "./acme", "certificate storage directory")
+	httpPort := flag.Int("http-port", 80, "HTTP-01 challenge port (0 to disable)")
+	tlsPort := flag.Int("tls-port", 443, "TLS-ALPN-01 challenge port (0 to disable)")
 	proxyAddr := flag.String("addr", ":8443", "proxy listen address")
+	caCert := flag.String("ca-cert", "ca.crt", "path to MITM CA certificate")
+	caKey := flag.String("ca-key", "ca.key", "path to MITM CA private key")
+	blockDomains := flag.String("block", "", "comma-separated domains to block")
+	eabKID := flag.String("eab-kid", "", "External Account Binding key ID (ZeroSSL)")
+	eabHMAC := flag.String("eab-hmac", "", "External Account Binding HMAC key (ZeroSSL)")
 	verbose := flag.Bool("v", false, "verbose logging")
 	flag.Parse()
 
@@ -47,14 +63,15 @@ func main() {
 		log.Fatal("email and domain are required")
 	}
 
-	// Configure logger
 	logLevel := slog.LevelInfo
 	if *verbose {
 		logLevel = slog.LevelDebug
 	}
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel}))
 
-	// Configure ACME
+	// ---------------------------------------------------------------
+	// 1. Set up the ACME certificate manager for the proxy listener.
+	// ---------------------------------------------------------------
 	acmeCfg := swg.ACMEConfig{
 		Email:       *email,
 		Domains:     []string{*domain},
@@ -62,88 +79,137 @@ func main() {
 		StoragePath: *storagePath,
 		HTTPPort:    *httpPort,
 		TLSPort:     *tlsPort,
-		RenewBefore: 30 * 24 * time.Hour, // 30 days
+		RenewBefore: 30 * 24 * time.Hour,
 	}
-
 	if *staging {
 		acmeCfg.CA = swg.LetsEncryptStaging
 		logger.Info("using Let's Encrypt staging environment")
 	}
+	if *eabKID != "" {
+		acmeCfg.EABKeyID = *eabKID
+		acmeCfg.EABMACKey = *eabHMAC
+	}
 
-	// Create ACME certificate manager
 	acm, err := swg.NewACMECertManager(acmeCfg)
 	if err != nil {
-		log.Fatalf("Failed to create ACME cert manager: %v", err)
+		log.Fatalf("create ACME cert manager: %v", err)
 	}
-	defer acm.Close()
-
 	acm.SetLogger(logger)
 
-	// Set up callbacks
-	acm.OnCertObtained = func(domain string) {
-		logger.Info("certificate obtained", "domain", domain)
-	}
-	acm.OnCertRenewed = func(domain string) {
-		logger.Info("certificate renewed", "domain", domain)
-	}
-	acm.OnError = func(domain string, err error) {
-		logger.Error("certificate error", "domain", domain, "error", err)
-	}
+	acm.OnCertObtained = func(d string) { logger.Info("certificate obtained", "domain", d) }
+	acm.OnCertRenewed = func(d string) { logger.Info("certificate renewed", "domain", d) }
+	acm.OnError = func(d string, e error) { logger.Error("certificate error", "domain", d, "error", e) }
 
-	// Initialize ACME client and register account
 	ctx := context.Background()
-	logger.Info("initializing ACME client", "email", *email, "domain", *domain)
+
 	if err := acm.Initialize(ctx); err != nil {
-		log.Fatalf("Failed to initialize ACME: %v", err)
+		log.Fatalf("ACME initialize: %v", err)
 	}
-
-	// Obtain initial certificates
-	logger.Info("obtaining certificates")
 	if err := acm.ObtainCertificates(ctx); err != nil {
-		log.Fatalf("Failed to obtain certificates: %v", err)
+		log.Fatalf("ACME obtain: %v", err)
 	}
-
-	// Start auto-renewal (checks every 12 hours)
 	acm.StartAutoRenewal(12 * time.Hour)
 
-	// Create proxy - Note: ACMECertManager implements the same interface as CertManager
-	// For MITM proxying, you may still want to use a self-signed CA for per-host certs.
-	// This example shows how to use ACME for the proxy's own TLS certificate.
-
-	// For this example, we'll create a simple HTTPS server that uses ACME certs
-	// In a real scenario, you'd combine this with a CertManager for MITM certs.
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/plain")
-		w.Write([]byte("SWG Proxy with Let's Encrypt!\n"))
-		w.Write([]byte("Domain: " + *domain + "\n"))
-	})
-
-	server := &http.Server{
-		Addr:    *proxyAddr,
-		Handler: mux,
-		TLSConfig: &tls.Config{
-			GetCertificate: acm.GetCertificate,
-			MinVersion:     tls.VersionTLS12,
-		},
+	// ---------------------------------------------------------------
+	// 2. Set up the self-signed CA CertManager for MITM per-host certs.
+	// ---------------------------------------------------------------
+	cm, err := swg.NewCertManager(*caCert, *caKey)
+	if err != nil {
+		log.Fatalf("load CA: %v", err)
 	}
 
-	// Graceful shutdown
+	// ---------------------------------------------------------------
+	// 3. Create the proxy with optional domain filtering.
+	// ---------------------------------------------------------------
+	proxy := swg.NewProxy(*proxyAddr, cm)
+	proxy.Logger = logger
+	proxy.BlockPage = swg.NewBlockPage()
+
+	if *blockDomains != "" {
+		filter := swg.NewDomainFilter()
+		for _, d := range splitDomains(*blockDomains) {
+			filter.AddDomain(d)
+		}
+		proxy.Filter = filter
+	}
+
+	// ---------------------------------------------------------------
+	// 4. Wrap the proxy listener with ACME-managed TLS so clients see
+	//    a publicly trusted certificate for the proxy host itself.
+	// ---------------------------------------------------------------
+	ln, err := net.Listen("tcp", *proxyAddr)
+	if err != nil {
+		log.Fatalf("listen: %v", err)
+	}
+	tlsLn := tls.NewListener(ln, &tls.Config{
+		GetCertificate: acm.GetCertificate,
+		MinVersion:     tls.VersionTLS12,
+	})
+
+	// ---------------------------------------------------------------
+	// 5. Graceful shutdown on SIGINT / SIGTERM.
+	// ---------------------------------------------------------------
 	done := make(chan os.Signal, 1)
 	signal.Notify(done, os.Interrupt, syscall.SIGTERM)
-
 	go func() {
 		<-done
 		logger.Info("shutting down")
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		shutCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		server.Shutdown(ctx)
+		if err := proxy.Shutdown(shutCtx); err != nil {
+			logger.Error("shutdown error", "error", err)
+		}
+		if err := acm.Close(); err != nil {
+			logger.Error("ACME close error", "error", err)
+		}
 	}()
 
-	// Start server
-	logger.Info("starting server", "addr", *proxyAddr, "domain", *domain)
-	if err := server.ListenAndServeTLS("", ""); err != http.ErrServerClosed {
-		log.Fatalf("Server error: %v", err)
+	logger.Info("starting proxy",
+		"addr", *proxyAddr,
+		"domain", *domain,
+		"staging", *staging,
+		"cached_certs", acm.CacheSize(),
+	)
+
+	srv := &http.Server{Handler: proxy}
+	if err := srv.Serve(tlsLn); err != nil && err != http.ErrServerClosed {
+		log.Fatalf("serve: %v", err)
+	}
+}
+
+func splitDomains(s string) []string {
+	var out []string
+	start := 0
+	for i := range len(s) {
+		if s[i] == ',' {
+			d := trim(s[start:i])
+			if d != "" {
+				out = append(out, d)
+			}
+			start = i + 1
+		}
+	}
+	if d := trim(s[start:]); d != "" {
+		out = append(out, d)
+	}
+	return out
+}
+
+func trim(s string) string {
+	for len(s) > 0 && s[0] == ' ' {
+		s = s[1:]
+	}
+	for len(s) > 0 && s[len(s)-1] == ' ' {
+		s = s[:len(s)-1]
+	}
+	return s
+}
+
+func init() {
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: acme [flags]\n\n")
+		fmt.Fprintf(os.Stderr, "Run an SWG MITM proxy with an ACME/Let's Encrypt listener certificate.\n\n")
+		fmt.Fprintf(os.Stderr, "Flags:\n")
+		flag.PrintDefaults()
 	}
 }
