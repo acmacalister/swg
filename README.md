@@ -33,6 +33,7 @@ An HTTPS man-in-the-middle (MITM) proxy for content filtering written in Go. SWG
 - **mTLS Client Auth**: Mutual TLS authentication requiring client certificates with identity/group extraction
 - **Bypass Token**: Allow authorized clients to skip filtering for debugging via header token or identity
 - **Certificate Rotation**: Hot-swap CA certificates at runtime without proxy restart
+- **OpenTelemetry Tracing**: Distributed tracing with W3C Trace Context propagation and OTLP exporters
 - **Cross-Platform**: Runs on Linux, macOS, and Windows
 
 ## Installation

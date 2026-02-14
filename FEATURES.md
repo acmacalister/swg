@@ -245,18 +245,20 @@ Comprehensive performance benchmarks and load testing.
 - `BenchmarkTransportPool` — connection pool request handling
 - Baseline comparisons: TLS handshake (~1.2ms), map lookup (~5ns), regex match (~2.9µs)
 
+### OpenTelemetry Tracing ✅
+Distributed tracing for request flows beyond Prometheus metrics.
+
+- W3C Trace Context propagation via `Tracer.Extract()` and `Tracer.Inject()`
+- `ProxyTracer` with proxy-specific spans: CONNECT, TLS handshake, cert generation, filter, upstream, body scan
+- OTLP HTTP and gRPC exporters (Jaeger and Zipkin accept OTLP natively)
+- Configurable sampling: always, never, or ratio-based
+- `TracingMiddleware` for automatic HTTP handler instrumentation
+- Resource attributes, batch settings, and custom headers support
+- `TracingConfig` with sensible defaults via `DefaultTracingConfig()`
+
 ---
 
 ## Planned
-
-### OpenTelemetry Tracing
-Distributed tracing for request flows beyond Prometheus metrics.
-
-- Trace context propagation (W3C Trace Context)
-- Span creation for proxy lifecycle stages
-- Integration with Jaeger, Zipkin, OTLP exporters
-- Configurable sampling rates
-- Request/response attribute capture
 
 ### DNS-01 ACME Challenge
 DNS-based ACME challenge for environments without exposed ports 80/443.

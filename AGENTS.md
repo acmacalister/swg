@@ -123,6 +123,8 @@ swg/
 ├── compress_test.go    # Tests for compression functions
 ├── bodylimit.go        # Request body size limiting
 ├── bodylimit_test.go   # Tests for body limit functions
+├── tracing.go          # OpenTelemetry distributed tracing
+├── tracing_test.go     # Tests for tracing functions
 ├── config.go           # Viper-based configuration loading
 ├── config_test.go      # Tests for config functions
 ├── .goreleaser.yaml    # GoReleaser configuration
@@ -381,6 +383,59 @@ Request body size limiting middleware:
 - `RecordFilterReload()` / `RecordFilterReloadError()` - Reload counters
 - `RecordUpstreamError(host)` - Upstream error counter
 - `RecordTLSHandshakeError()` - TLS handshake failure counter
+
+### `Tracer` (tracing.go)
+OpenTelemetry distributed tracing:
+- `NewTracer(cfg)` - Create from TracingConfig
+- `StartSpan(ctx, name, opts...)` - Start a new span
+- `SpanFromContext(ctx)` - Get current span from context
+- `Extract(ctx, headers)` - Extract trace context from HTTP headers (W3C)
+- `Inject(ctx, headers)` - Inject trace context into HTTP headers (W3C)
+- `Shutdown(ctx)` - Gracefully shutdown tracer provider
+- `Enabled()` - Check if tracing is enabled
+- `TracerProvider()` - Access underlying `*sdktrace.TracerProvider`
+
+**`TracingConfig` Fields:**
+- `Enabled` - Enable/disable tracing
+- `ServiceName` - Service name in traces (default: "swg-proxy")
+- `ServiceVersion` - Service version in traces
+- `Exporter` - ExporterType: `otlp-http` (default) or `otlp-grpc`
+- `Endpoint` - OTLP collector endpoint (default: localhost:4318 for HTTP, :4317 for gRPC)
+- `Insecure` - Disable TLS for exporter connection
+- `Headers` - Additional headers for OTLP requests
+- `SampleRate` - Sampling rate 0.0-1.0 (default: 1.0)
+- `BatchTimeout` - Max time before exporting batch (default: 5s)
+- `MaxExportBatchSize` - Max spans per batch (default: 512)
+- `MaxQueueSize` - Max spans to queue (default: 2048)
+- `ResourceAttributes` - Additional resource attributes
+
+### `TracingMiddleware` (tracing.go)
+HTTP handler wrapper for automatic span creation:
+- `NewTracingMiddleware(tracer, next, opts)` - Create middleware
+- `ServeHTTP(w, r)` - Implements `http.Handler`
+
+**`TracingMiddlewareOptions` Fields:**
+- `IncludeHeaders` - Capture request/response headers
+- `HeadersToCapture` - Specific headers to capture (empty = all)
+- `IncludeQuery` - Include query string in attributes
+- `SkipPaths` - URL paths to skip tracing
+
+### `ProxyTracer` (tracing.go)
+Proxy-specific span helpers:
+- `NewProxyTracer(tracer)` - Wrap a Tracer for proxy operations
+- `StartRequest(ctx, req)` - Span for incoming proxy request
+- `StartConnect(ctx, host, clientAddr)` - Span for CONNECT tunnel
+- `StartTLSHandshake(ctx, host)` - Span for TLS handshake
+- `StartCertGeneration(ctx, host)` - Span for certificate generation
+- `StartFilter(ctx, host)` - Span for filter evaluation
+- `StartUpstream(ctx, req)` - Span for upstream request (injects trace context)
+- `StartBodyScan(ctx, contentType, size)` - Span for body scanning
+- `RecordError(ctx, err)` - Record error on current span
+- `SetBlocked(ctx, reason)` - Mark request as blocked
+- `SetAllowed(ctx)` - Mark request as allowed
+- `SetIdentity(ctx, identity, groups)` - Set identity attributes
+- `SetUpstreamResponse(ctx, status, contentLength)` - Record response details
+- `AddEvent(ctx, name, attrs...)` - Add event to current span
 
 ### `BlockPage` (blockpage.go)
 - `NewBlockPage()` - Default styled block page
