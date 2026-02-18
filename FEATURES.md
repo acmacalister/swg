@@ -256,17 +256,25 @@ Distributed tracing for request flows beyond Prometheus metrics.
 - Resource attributes, batch settings, and custom headers support
 - `TracingConfig` with sensible defaults via `DefaultTracingConfig()`
 
+### DNS-01 ACME Challenge ✅
+DNS-based ACME challenge for environments without exposed ports 80/443.
+
+- `DNS01Config` and `DNS01ChallengeProvider` for DNS-01 challenge handling
+- DNS provider integrations: Cloudflare, Route53, Google Cloud DNS, DigitalOcean
+- Manual provider for custom DNS management workflows
+- Custom provider interface for unsupported DNS providers
+- Wildcard certificate support (`*.example.com`) — requires DNS-01
+- Configurable propagation timeout and polling interval
+- `DisablePropagationCheck` option for environments where DNS propagation check fails
+- Custom nameserver support for private DNS resolvers
+- `MemoryDNSProvider` and `MockDNSProvider` for testing
+- Helper functions: `WildcardDomain()`, `IsWildcardDomain()`, `BaseDomain()`
+- `GetDNS01ChallengeInfo()` for debugging challenge records
+- Integrates with `ACMECertManager` via `SetDNS01Provider()`
+
 ---
 
 ## Planned
-
-### DNS-01 ACME Challenge
-DNS-based ACME challenge for environments without exposed ports 80/443.
-
-- DNS provider integrations via `libdns` ecosystem
-- Support for Cloudflare, Route53, Google Cloud DNS, DigitalOcean, etc.
-- Wildcard certificate support (requires DNS-01)
-- Configurable propagation timeout and polling interval
 
 ### HTTP/3 Listener
 QUIC/HTTP3 support for the proxy's client-facing listener.

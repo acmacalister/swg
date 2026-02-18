@@ -119,6 +119,8 @@ swg/
 ├── bypass_test.go      # Tests for bypass functions
 ├── acme.go             # ACME/Let's Encrypt certificate management (lego)
 ├── acme_test.go        # Tests for ACME functions
+├── dns01.go            # DNS-01 ACME challenge provider
+├── dns01_test.go       # Tests for DNS-01 functions
 ├── compress.go         # Response compression (gzip/zstd/brotli)
 ├── compress_test.go    # Tests for compression functions
 ├── bodylimit.go        # Request body size limiting
@@ -185,6 +187,40 @@ ACME/Let's Encrypt certificate management using [lego](https://github.com/go-acm
 - `OnCertObtained func(domain string)` - Called when certificate obtained
 - `OnCertRenewed func(domain string)` - Called when certificate renewed
 - `OnError func(domain string, err error)` - Called on errors
+
+### `DNS01ChallengeProvider` (dns01.go)
+DNS-01 ACME challenge provider for wildcard certificates and environments without exposed ports:
+- `NewDNS01ChallengeProvider(cfg)` - Create from DNS01Config
+- `Present(domain, token, keyAuth)` - Create DNS TXT record for challenge
+- `CleanUp(domain, token, keyAuth)` - Remove DNS TXT record after challenge
+- `Timeout()` - Returns propagation timeout and polling interval
+- `ChallengeOptions()` - Returns dns01.ChallengeOption values
+- `Provider()` - Returns underlying challenge.Provider
+
+**DNS01Config Fields:**
+- `Provider` - DNS provider name: cloudflare, route53, gcloud, digitalocean, manual, custom
+- `PropagationTimeout` - Max time to wait for DNS propagation (default: 2 minutes)
+- `PollingInterval` - How often to check DNS propagation (default: 2 seconds)
+- `DisablePropagationCheck` - Skip DNS propagation verification
+- `Nameservers` - Custom DNS servers for propagation check
+- `CloudflareAPIToken` / `CloudflareAPIKey` / `CloudflareEmail` - Cloudflare credentials
+- `Route53AccessKeyID` / `Route53SecretAccessKey` / `Route53Region` - AWS credentials
+- `GCloudProject` / `GCloudServiceAccountJSON` - Google Cloud credentials
+- `DigitalOceanToken` - DigitalOcean API token
+- `CustomProvider` - Custom challenge.Provider implementation
+
+**Helper Functions:**
+- `WildcardDomain(domain)` - Returns `*.domain` (e.g., `"example.com"` → `"*.example.com"`)
+- `IsWildcardDomain(domain)` - Checks if domain starts with `*.`
+- `BaseDomain(domain)` - Strips wildcard prefix (e.g., `"*.example.com"` → `"example.com"`)
+- `GetDNS01ChallengeInfo(domain, keyAuth)` - Returns DNS01ChallengeInfo with FQDN and TXT value
+
+**Testing Providers:**
+- `MemoryDNSProvider` - In-memory DNS provider for testing
+- `MockDNSProvider` - Configurable mock with PresentFunc/CleanUpFunc and call tracking
+
+**ACMECertManager Integration:**
+- `acm.SetDNS01Provider(provider)` - Configure DNS-01 challenge (call after Initialize, before ObtainCertificates)
 
 ### `Proxy` (proxy.go)
 - `NewProxy(addr, certManager)` - Create new proxy instance
