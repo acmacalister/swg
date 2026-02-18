@@ -1,5 +1,136 @@
 package swg
 
+// DNS-01 ACME Challenge Support
+//
+// This file provides DNS-01 challenge support for ACME certificate issuance.
+// DNS-01 is required for:
+//   - Wildcard certificates (*.example.com)
+//   - Environments where ports 80/443 are not publicly accessible
+//   - Internal/private domains that can't be validated via HTTP
+//
+// # Supported DNS Providers
+//
+// The following DNS providers are supported out of the box:
+//   - Cloudflare (cloudflare) — requires API token or API key + email
+//   - AWS Route 53 (route53) — requires AWS credentials
+//   - Google Cloud DNS (gcloud) — requires service account JSON
+//   - DigitalOcean (digitalocean) — requires API token
+//   - Manual (manual) — prompts for manual DNS record creation
+//   - Custom (custom) — use your own DNS01Provider implementation
+//
+// # Basic Usage
+//
+// Create a DNS-01 provider and integrate it with ACMECertManager:
+//
+//	// Create DNS-01 provider with Cloudflare
+//	dns01Provider, err := swg.NewDNS01ChallengeProvider(swg.DNS01Config{
+//	    Provider:           "cloudflare",
+//	    CloudflareAPIToken: os.Getenv("CF_API_TOKEN"),
+//	})
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+//
+//	// Create ACME cert manager for wildcard domain
+//	acm, err := swg.NewACMECertManager(swg.ACMEConfig{
+//	    Email:     "admin@example.com",
+//	    Domains:   []string{"*.example.com", "example.com"},
+//	    AcceptTOS: true,
+//	})
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+//
+//	// Initialize and configure DNS-01
+//	ctx := context.Background()
+//	acm.Initialize(ctx)
+//	acm.SetDNS01Provider(dns01Provider)
+//
+//	// Obtain wildcard certificate
+//	acm.ObtainCertificates(ctx)
+//
+// # Provider Configuration
+//
+// Each provider requires specific credentials:
+//
+// Cloudflare:
+//   - CloudflareAPIToken (preferred) — scoped API token with Zone:DNS:Edit permission
+//   - CloudflareAPIKey + CloudflareEmail — legacy global API key authentication
+//   - CloudflareZoneID (optional) — specific zone ID, otherwise auto-detected
+//
+// AWS Route 53:
+//   - Route53AccessKeyID + Route53SecretAccessKey — IAM credentials
+//   - Route53Region — AWS region (e.g., "us-east-1")
+//   - Route53HostedZoneID (optional) — specific hosted zone, otherwise auto-detected
+//   - Also supports standard AWS credential chain (env vars, ~/.aws/credentials, IAM role)
+//
+// Google Cloud DNS:
+//   - GCloudProject — GCP project ID containing the DNS zone
+//   - GCloudServiceFile — path to service account JSON key file
+//   - Also supports GOOGLE_APPLICATION_CREDENTIALS environment variable
+//
+// DigitalOcean:
+//   - DigitalOceanToken — API token with write access to DNS
+//
+// # Custom Providers
+//
+// Implement the DNS01Provider interface for unsupported DNS providers:
+//
+//	type MyDNSProvider struct{}
+//
+//	func (p *MyDNSProvider) Present(domain, token, keyAuth string) error {
+//	    info := dns01.GetChallengeInfo(domain, keyAuth)
+//	    // Create TXT record: info.FQDN with value info.Value
+//	    return nil
+//	}
+//
+//	func (p *MyDNSProvider) CleanUp(domain, token, keyAuth string) error {
+//	    info := dns01.GetChallengeInfo(domain, keyAuth)
+//	    // Delete TXT record: info.FQDN
+//	    return nil
+//	}
+//
+//	// Use custom provider
+//	provider, _ := swg.NewDNS01ChallengeProvider(swg.DNS01Config{
+//	    Provider:       "custom",
+//	    CustomProvider: &MyDNSProvider{},
+//	})
+//
+// # Propagation Settings
+//
+// DNS record propagation can be tuned:
+//
+//	cfg := swg.DNS01Config{
+//	    Provider:           "cloudflare",
+//	    PropagationTimeout: 5 * time.Minute,  // Max wait time (default: 2 min)
+//	    PollingInterval:    10 * time.Second, // Check interval (default: 5 sec)
+//	    Nameservers:        []string{"8.8.8.8:53"}, // Custom DNS servers
+//	    DisablePropagationCheck: true, // Skip verification (use with caution)
+//	}
+//
+// # Helper Functions
+//
+// Utility functions for working with wildcard domains:
+//
+//	swg.WildcardDomain("example.com")     // Returns "*.example.com"
+//	swg.IsWildcardDomain("*.example.com") // Returns true
+//	swg.BaseDomain("*.example.com")       // Returns "example.com"
+//
+// # Testing
+//
+// Use MemoryDNSProvider or MockDNSProvider for testing:
+//
+//	// In-memory provider that stores records
+//	mem := swg.NewMemoryDNSProvider()
+//	mem.Present("example.com", "token", "keyAuth")
+//	value, ok := mem.GetRecord("_acme-challenge.example.com.")
+//
+//	// Mock provider with custom behavior
+//	mock := swg.NewMockDNSProvider()
+//	mock.PresentFunc = func(domain, token, keyAuth string) error {
+//	    return errors.New("simulated failure")
+//	}
+
 import (
 	"errors"
 	"fmt"

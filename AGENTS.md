@@ -143,7 +143,8 @@ swg/
 │   ├── admin/          # Admin API with runtime rule management
 │   ├── mtls/           # mTLS client certificate authentication
 │   ├── bypass/         # Bypass token for debugging
-│   └── acme/           # ACME/Let's Encrypt certificates
+│   ├── acme/           # ACME/Let's Encrypt certificates
+│   └── dns01/          # DNS-01 ACME challenge for wildcard certs
 ├── deploy/
 │   ├── kubernetes/     # Raw K8s manifests
 │   └── helm/swg/       # Helm chart
