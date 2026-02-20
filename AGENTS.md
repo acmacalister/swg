@@ -95,6 +95,7 @@ swg/
 ├── accesslog.go        # Structured access log with slog
 ├── accesslog_test.go   # Tests for access log functions
 ├── reload.go           # SIGHUP signal reload support
+├── reload_test.go      # Tests for reload functions
 ├── metrics.go          # Prometheus metrics instrumentation
 ├── metrics_test.go     # Tests for metrics functions
 ├── pac.go              # PAC file generator
@@ -127,6 +128,8 @@ swg/
 ├── bodylimit_test.go   # Tests for body limit functions
 ├── tracing.go          # OpenTelemetry distributed tracing
 ├── tracing_test.go     # Tests for tracing functions
+├── cel.go              # CEL expression matchers for advanced filtering
+├── cel_test.go         # Tests for CEL functions
 ├── config.go           # Viper-based configuration loading
 ├── config_test.go      # Tests for config functions
 ├── .goreleaser.yaml    # GoReleaser configuration
@@ -144,7 +147,8 @@ swg/
 │   ├── mtls/           # mTLS client certificate authentication
 │   ├── bypass/         # Bypass token for debugging
 │   ├── acme/           # ACME/Let's Encrypt certificates
-│   └── dns01/          # DNS-01 ACME challenge for wildcard certs
+│   ├── dns01/          # DNS-01 ACME challenge for wildcard certs
+│   └── cel/            # CEL expression matchers for advanced filtering
 ├── deploy/
 │   ├── kubernetes/     # Raw K8s manifests
 │   └── helm/swg/       # Helm chart
@@ -291,6 +295,41 @@ Built-in loaders:
 - `StartAutoReload(ctx, interval)` - Background reload goroutine
 - `OnReload` - Callback after successful reload
 - `OnError` - Callback on reload error
+
+### `CELMatcher` (cel.go)
+Compiles and evaluates CEL expressions against HTTP requests:
+- `NewCELMatcher(cfg)` - Create from `CELMatcherConfig`
+- `Match(req)` - Evaluate expression against request, returns bool
+- `MatchWithContext(req, rc)` - Evaluate with `RequestContext` for client identity/groups/tags
+
+**`CELMatcherConfig` Fields:**
+- `Expression` - CEL expression string (required)
+- `Reason` - Block reason (optional, for logging/block pages)
+- `Category` - Category for grouping rules (optional)
+
+**Available Variables:**
+- `request["method"]`, `request["host"]`, `request["path"]`, `request["query"]`, `request["scheme"]`, `request["url"]`, `request["headers"]`, `request["content_length"]`, `request["content_type"]`
+- `client["ip"]`, `client["identity"]`, `client["groups"]`, `client["tags"]`
+
+**Custom Functions:**
+- `isDomain(string)` - Exact domain match (case-insensitive)
+- `matchesDomain(string)` - Domain or subdomain match
+- `inCIDR(string)` - Check if IP is in CIDR range
+- `isPrivate()` - Check if IP is in RFC 1918 private range
+
+### `CELFilter` (cel.go)
+Combines multiple CEL expressions with OR logic:
+- `NewCELFilter()` - Create empty filter
+- `AddExpression(cfg)` - Add expression, returns error if invalid
+- `AddExpressionMust(cfg)` - Add expression, panics on error
+- `ShouldBlock(req)` - Implements `Filter` interface (first match wins)
+
+### `CELRuleSet` (cel.go)
+Extends `RuleSet` with CEL expression support:
+- `NewCELRuleSet()` - Create empty rule set
+- `AddCEL(expr, reason, category)` - Add CEL rule (rule type `"cel"`)
+- Inherits all `RuleSet` methods (AddDomain, AddURL, AddRegex, etc.)
+- CEL rules are evaluated after domain/URL/regex rules
 
 ### `AdminAPI` (admin.go)
 REST API for runtime proxy management using [chi](https://github.com/go-chi/chi) router:
@@ -616,6 +655,7 @@ Config values can be overridden via `SWG_` prefixed env vars:
 | `domain` | `*.ads.com` | Wildcard subdomain match |
 | `url` | `https://evil.com/path` | URL prefix match |
 | `regex` | `.*tracking.*` | Regex pattern on full URL |
+| `cel` | `request["method"] == "DELETE"` | CEL expression (via CELRuleSet) |
 
 ## CSV Format
 
@@ -689,6 +729,7 @@ See `_examples/` directory:
 - `policy/` - Full policy engine: identity resolution, group policies, content-type blocking, body scanning
 - `allowlist/` - Allow-list mode with time-based rules and ChainFilter composition
 - `scanner/` - Response body scanning with AV and DLP scanner implementations
+- `cel/` - CEL expression matchers for advanced filtering rules
 
 ## Kubernetes Deployment
 

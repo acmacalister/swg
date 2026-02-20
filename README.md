@@ -12,6 +12,7 @@ An HTTPS man-in-the-middle (MITM) proxy for content filtering written in Go. SWG
 
 - **SSL/TLS Interception**: Decrypt HTTPS traffic using dynamically generated certificates
 - **Content Filtering**: Block requests based on domain names, URL prefixes, and regex patterns
+- **CEL Expression Filtering**: Type-safe [CEL](https://github.com/google/cel-spec) expressions for complex filtering logic with custom functions
 - **Custom Block Pages**: Fully customizable HTML block pages with template support
 - **PAC File Generation**: Generate Proxy Auto-Configuration files for client setup
 - **Prometheus Metrics**: Built-in instrumentation for monitoring and alerting
@@ -367,6 +368,47 @@ rs.AddRule(swg.Rule{
 
 proxy.Filter = rs
 ```
+
+### CEL Expression Filtering
+
+For complex filtering logic beyond simple patterns, use CEL (Common Expression Language) expressions. CEL provides a type-safe, sandboxed expression language with access to request attributes, client context, and custom functions.
+
+```go
+// Create a CEL-enhanced rule set
+rs := swg.NewCELRuleSet()
+
+// Standard rules for fast O(1) lookups
+rs.AddDomain("ads.example.com")
+rs.AddDomain("*.tracking.com")
+
+// CEL expressions for complex conditions
+rs.AddRule(swg.Rule{
+    Type:     "cel",
+    Pattern:  `request["method"] == "DELETE" && !("admin" in client["groups"])`,
+    Reason:   "DELETE requires admin group",
+    Category: "access-control",
+})
+
+// Block non-private IPs from internal endpoints
+rs.AddCEL(`request["host"].matchesDomain("internal.corp") && !client["ip"].isPrivate()`)
+
+// Block large uploads except to specific path
+rs.AddCEL(`request["content_length"] > 10485760 && !request["path"].startsWith("/uploads")`)
+
+proxy.Filter = rs
+```
+
+**Available Variables:**
+- `request["method"]`, `request["host"]`, `request["path"]`, `request["query"]`, `request["scheme"]`, `request["url"]`, `request["headers"]`, `request["content_length"]`, `request["content_type"]`
+- `client["ip"]`, `client["identity"]`, `client["groups"]`, `client["tags"]`
+
+**Custom Functions:**
+- `isDomain(string)` - Exact domain match
+- `matchesDomain(string)` - Domain or subdomain match
+- `inCIDR(string)` - Check if IP is in CIDR range
+- `isPrivate()` - Check if IP is in RFC 1918 private range
+
+For full CEL documentation, see the [CEL Language Spec](https://github.com/google/cel-spec) and [CEL-Go](https://github.com/google/cel-go). See also [`_examples/cel/`](./_examples/cel/) for a complete working example.
 
 ### Loading Rules from CSV
 

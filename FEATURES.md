@@ -272,24 +272,44 @@ DNS-based ACME challenge for environments without exposed ports 80/443.
 - `GetDNS01ChallengeInfo()` for debugging challenge records
 - Integrates with `ACMECertManager` via `SetDNS01Provider()`
 
+### CEL Expression Matchers ✅
+Common Expression Language for advanced rule evaluation using [cel-go](https://github.com/google/cel-go).
+
+- `CELMatcher` compiles and evaluates CEL expressions against requests
+- `CELFilter` combines multiple CEL expressions (OR logic, first match wins)
+- `CELRuleSet` extends `RuleSet` with CEL support (rule type `"cel"`)
+- Access to request attributes: method, host, path, query, scheme, url, headers, content_length, content_type
+- Access to client context: ip, identity, groups, tags (from `RequestContext`)
+- Custom functions: `isDomain()`, `matchesDomain()`, `inCIDR()`, `isPrivate()`
+- Precompiled expressions with object pooling for low-allocation evaluation
+- Thread-safe for concurrent use
+- Examples:
+  - `request["method"] == "DELETE"` — block DELETE requests
+  - `request["host"].matchesDomain("example.com")` — match domain and subdomains
+  - `client["ip"].inCIDR("10.0.0.0/8")` — check client IP range
+  - `"admin" in client["groups"]` — check group membership
+  - `request["path"].startsWith("/api/") && request["method"] != "GET"` — complex conditions
+
 ---
 
 ## Planned
 
+(No planned features at this time. See Won't Do for considered features.)
+
+---
+
+## Won't Do
+
 ### HTTP/3 Listener
 QUIC/HTTP3 support for the proxy's client-facing listener.
 
-- Faster connection establishment (0-RTT)
-- Better multiplexing without head-of-line blocking
-- Connection migration for mobile clients
-- Falls back to HTTP/2 for incompatible clients
-- Note: MITM interception of HTTP/3 traffic not planned (falls back to HTTP/2)
+**Decision**: Not implementing. A WireGuard-style tunnel is a better approach for endpoint agents.
 
-### CEL Expression Matchers
-Common Expression Language for advanced rule evaluation.
+**Rationale**:
+- MITM interception of HTTP/3 traffic is not possible (QUIC encrypts from first packet)
+- For network proxy mode, HTTP/2 downgrade works and will continue to work
+- For endpoint agents, WireGuard tunnels are simpler and more proven than HTTP/3
+- Adding quic-go would significantly increase code complexity for marginal benefit
+- Traffic arriving through a WireGuard tunnel is already decrypted at the proxy
 
-- Powerful boolean expressions beyond regex
-- Access to request headers, path, method, client IP, identity
-- Examples: `request.header["X-Custom"] == "value" && request.path.startsWith("/api")`
-- Composable with existing filter types
-- Precompiled expressions for performance
+**Alternative**: Endpoint agents use WireGuard (via [wireguard-go](https://github.com/WireGuard/wireguard-go)) to tunnel traffic to the proxy. Traffic arrives decrypted and the proxy performs filtering as usual. This is the same approach used by Cloudflare WARP, Tailscale, and enterprise zero-trust solutions.
