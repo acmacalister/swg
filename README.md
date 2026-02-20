@@ -264,6 +264,44 @@ Environment variables override config file values with `SWG_` prefix:
 
 SWG can be used as a Go library for building custom proxy solutions.
 
+### Certificate Architecture
+
+Two separate certificates serve different purposes in SWG:
+
+| Certificate | Purpose | Source |
+|---|---|---|
+| **CA cert** (`CertManager`) | Signs fake per-host certs for MITM interception | Self-signed, must be trusted on client devices |
+| **Listener cert** (`ACMECertManager`) | TLS for the proxy server itself (`proxy.example.com`) | Let's Encrypt via ACME |
+
+#### CA Certificate (`CertManager`)
+
+The CA certificate is used for MITM inspection. When a client connects to `https://example.com` through the proxy, `CertManager` dynamically generates a fake certificate for `example.com` signed by this CA. This CA must be installed as a trusted root on all client devices.
+
+#### ACME Certificate (`ACMECertManager`)
+
+The ACME certificate secures the **client-to-proxy transport** itself. Without it, clients connect to the proxy over plain HTTP or with a self-signed cert. With `ACMECertManager`, the proxy endpoint (e.g. `proxy.example.com:443`) presents a real Let's Encrypt certificate, so the initial connection is trusted by default without manual cert installs.
+
+#### How They Work Together
+
+In production, both are typically used together:
+
+1. Client connects to `proxy.example.com:443` — trusted via **ACME/Let's Encrypt cert**
+2. Client sends `CONNECT example.com:443` through the proxy
+3. Proxy intercepts and presents a forged cert for `example.com` — signed by the **CA cert**
+4. Proxy opens its own TLS connection to the real `example.com`, inspects/filters traffic, and forwards it
+
+```
+┌────────┐         ┌─────────────────────┐         ┌─────────────┐
+│ Client │ ──TLS─▶ │       Proxy         │ ──TLS─▶ │ example.com │
+└────────┘         └─────────────────────┘         └─────────────┘
+             │                   │
+             │                   │
+      ACME cert for        CA cert signs
+    proxy.example.com    fake example.com cert
+```
+
+ACME secures the proxy-to-client transport. The CA cert enables MITM inspection of destination traffic. They are complementary, not overlapping.
+
 ### Basic Proxy
 
 ```go
