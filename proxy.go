@@ -88,6 +88,18 @@ type Proxy struct {
 	// filter and policy hooks. See [Bypass] for configuration.
 	Bypass *Bypass
 
+	// WebSocketHandler provides hooks for inspecting WebSocket traffic.
+	// When set and a WebSocket upgrade is detected, the proxy intercepts
+	// WebSocket frames and passes them through the handler. When nil,
+	// WebSocket connections are passed through as opaque byte streams.
+	// See [WebSocketHandler] for the interface definition.
+	WebSocketHandler WebSocketHandler
+
+	// WebSocketConfig configures WebSocket interception behavior.
+	// Only used when WebSocketHandler is set. If zero, defaults from
+	// [DefaultWebSocketConfig] are used.
+	WebSocketConfig WebSocketConfig
+
 	listener net.Listener
 	srv      *http.Server
 }
@@ -341,6 +353,12 @@ func (p *Proxy) handleTLSConnection(conn *tls.Conn, defaultHost string) {
 			}
 		}
 
+		// Handle WebSocket upgrade requests specially
+		if p.WebSocketHandler != nil && IsWebSocketUpgrade(req) {
+			p.handleWebSocketUpgrade(conn, req, rc)
+			return // WebSocket handler takes over the connection
+		}
+
 		// Forward the request
 		start := time.Now()
 		resp, err := p.forwardRequest(req)
@@ -510,6 +528,169 @@ func (p *Proxy) writeErrorResponse(w io.Writer, err error) {
 		ContentLength: int64(len(body)),
 	}
 	_ = resp.Write(w)
+}
+
+// handleWebSocketUpgrade handles WebSocket upgrade requests by intercepting
+// the WebSocket connection and passing messages through the handler.
+func (p *Proxy) handleWebSocketUpgrade(clientConn net.Conn, req *http.Request, rc *RequestContext) {
+	start := time.Now()
+	p.Logger.Debug("websocket upgrade", "host", req.Host, "path", req.URL.Path)
+
+	// Dial upstream directly (bypass RoundTripper to get raw connection)
+	serverConn, err := p.dialWebSocketUpstream(req)
+	if err != nil {
+		p.Logger.Error("websocket dial upstream", "error", err, "host", req.Host)
+		if p.Metrics != nil {
+			p.Metrics.RecordUpstreamError(req.Host)
+		}
+		p.writeErrorResponse(clientConn, fmt.Errorf("websocket upstream: %w", err))
+		if p.AccessLog != nil {
+			p.AccessLog.Log(AccessLogEntry{
+				Timestamp:  time.Now(),
+				Method:     req.Method,
+				Host:       req.Host,
+				Path:       req.URL.Path,
+				Scheme:     req.URL.Scheme,
+				Duration:   time.Since(start),
+				ClientAddr: clientConn.RemoteAddr().String(),
+				UserAgent:  req.UserAgent(),
+				Error:      err.Error(),
+			})
+		}
+		return
+	}
+	defer func() { _ = serverConn.Close() }()
+
+	// Send the upgrade request to upstream
+	if err := req.Write(serverConn); err != nil {
+		p.Logger.Error("websocket write request", "error", err)
+		p.writeErrorResponse(clientConn, fmt.Errorf("websocket write: %w", err))
+		return
+	}
+
+	// Read the upgrade response from upstream
+	serverReader := bufio.NewReader(serverConn)
+	resp, err := http.ReadResponse(serverReader, req)
+	if err != nil {
+		p.Logger.Error("websocket read response", "error", err)
+		p.writeErrorResponse(clientConn, fmt.Errorf("websocket response: %w", err))
+		return
+	}
+
+	// Check for successful upgrade
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		// Not a successful upgrade - write response back and return
+		_ = resp.Write(clientConn)
+		_ = resp.Body.Close()
+		if p.AccessLog != nil {
+			p.AccessLog.Log(AccessLogEntry{
+				Timestamp:  time.Now(),
+				Method:     req.Method,
+				Host:       req.Host,
+				Path:       req.URL.Path,
+				Scheme:     req.URL.Scheme,
+				StatusCode: resp.StatusCode,
+				Duration:   time.Since(start),
+				ClientAddr: clientConn.RemoteAddr().String(),
+				UserAgent:  req.UserAgent(),
+			})
+		}
+		return
+	}
+
+	// Write the 101 response back to client
+	if err := resp.Write(clientConn); err != nil {
+		p.Logger.Error("websocket write 101", "error", err)
+		_ = resp.Body.Close()
+		return
+	}
+	_ = resp.Body.Close()
+
+	// Get WebSocket config with defaults
+	config := p.WebSocketConfig
+	if config.MaxMessageSize == 0 {
+		config = DefaultWebSocketConfig()
+	}
+
+	// Create interceptor and handle WebSocket frames
+	interceptor := NewWebSocketInterceptor(p.WebSocketHandler, config)
+
+	// The server connection may have buffered data from the reader,
+	// so we wrap it in a bufferedConn to handle any leftover bytes.
+	bufferedServer := &bufferedReaderConn{
+		Conn:   serverConn,
+		reader: serverReader,
+	}
+
+	ctx := req.Context()
+	if rc != nil {
+		ctx = WithRequestContext(ctx, rc)
+	}
+
+	if err := interceptor.Intercept(ctx, clientConn, bufferedServer, req, resp); err != nil {
+		p.Logger.Debug("websocket intercept", "error", err, "host", req.Host)
+	}
+
+	if p.AccessLog != nil {
+		p.AccessLog.Log(AccessLogEntry{
+			Timestamp:  time.Now(),
+			Method:     req.Method,
+			Host:       req.Host,
+			Path:       req.URL.Path,
+			Scheme:     "wss",
+			StatusCode: http.StatusSwitchingProtocols,
+			Duration:   time.Since(start),
+			ClientAddr: clientConn.RemoteAddr().String(),
+			UserAgent:  req.UserAgent(),
+		})
+	}
+}
+
+// dialWebSocketUpstream establishes a TLS connection to the upstream server.
+func (p *Proxy) dialWebSocketUpstream(req *http.Request) (net.Conn, error) {
+	host := req.Host
+	if !strings.Contains(host, ":") {
+		host = host + ":443"
+	}
+
+	// If using upstream proxy, use CONNECT through it
+	if p.UpstreamProxy != nil {
+		return p.UpstreamProxy.DialConnect(req.Context(), "tcp", host, nil)
+	}
+
+	// Direct TLS connection
+	dialer := &net.Dialer{Timeout: 30 * time.Second}
+	conn, err := dialer.DialContext(req.Context(), "tcp", host)
+	if err != nil {
+		return nil, err
+	}
+
+	// Wrap with TLS
+	hostname, _, _ := net.SplitHostPort(host)
+	if hostname == "" {
+		hostname = host
+	}
+	tlsConn := tls.Client(conn, &tls.Config{
+		ServerName: hostname,
+	})
+
+	if err := tlsConn.HandshakeContext(req.Context()); err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("tls handshake: %w", err)
+	}
+
+	return tlsConn, nil
+}
+
+// bufferedReaderConn wraps a net.Conn with a buffered reader to handle
+// any leftover data that was buffered during HTTP response parsing.
+type bufferedReaderConn struct {
+	net.Conn
+	reader *bufio.Reader
+}
+
+func (c *bufferedReaderConn) Read(p []byte) (int, error) {
+	return c.reader.Read(p)
 }
 
 // handleHTTP handles plain HTTP requests (non-CONNECT).

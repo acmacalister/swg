@@ -290,11 +290,86 @@ Common Expression Language for advanced rule evaluation using [cel-go](https://g
   - `"admin" in client["groups"]` — check group membership
   - `request["path"].startsWith("/api/") && request["method"] != "GET"` — complex conditions
 
+### WebSocket Interception ✅
+Inspect and filter WebSocket frames with full message inspection.
+
+- `WebSocketHandler` interface for lifecycle hooks: `OnConnect`, `OnMessage`, `OnClose`
+- RFC 6455 compliant frame parsing with FIN, opcode, masking, payload length
+- Message defragmentation (continuation frames) handled automatically
+- `WebSocketMessage` struct with opcode, payload, direction, timestamp
+- Control frame handling: automatic ping/pong response, close frame relay
+- Per-message filtering: pass through, modify, or drop messages
+- Close status codes: `CloseNormalClosure`, `ClosePolicyViolation`, `CloseMessageTooBig`, etc.
+- `WebSocketConfig` for max message size, read/write timeouts, ping/pong intervals
+- `WebSocketHandlerFunc` adapter for simple message-only handlers
+- `IsWebSocketUpgrade(req)` helper to detect upgrade requests
+- Integrates with `Proxy.WebSocketHandler` and `Proxy.WebSocketConfig` fields
+- Supports both `wss://` (HTTPS) traffic through the MITM proxy
+- Example: `_examples/websocket/` demonstrates logging and content filtering
+
 ---
 
 ## Planned
 
-(No planned features at this time. See Won't Do for considered features.)
+### LDAP/OIDC Identity Resolver
+Enterprise identity integration beyond IP-based resolution.
+
+- `LDAPIdentityResolver` for Active Directory / OpenLDAP
+- `OIDCIdentityResolver` for Okta, Azure AD, Auth0, Keycloak
+- Extract identity from request headers (e.g., `X-Forwarded-User` from SSO proxy)
+- Group membership lookup with caching and TTL
+- Fallback chain: OIDC → LDAP → IP → anonymous
+- Integrates with existing `PolicyEngine` and `GroupPolicyFilter`
+
+### Redis-Backed Rate Limiter
+Distributed rate limiting for multi-instance deployments.
+
+- `RedisRateLimiter` using Redis INCR with TTL for token bucket
+- Lua scripts for atomic check-and-decrement operations
+- Connection pooling and automatic reconnection
+- Fallback to local rate limiter if Redis unavailable
+- Configurable key prefix for multi-tenant deployments
+- Prometheus metrics for Redis latency and errors
+
+### Rule Versioning and Rollback
+Safe configuration changes with instant rollback capability.
+
+- Version tracking for rule sets with timestamps
+- `Snapshot()` and `Restore(version)` methods on `RuleSet`
+- Automatic snapshots before reload operations
+- Configurable retention (e.g., keep last 10 versions)
+- Admin API endpoints: `GET /api/rules/versions`, `POST /api/rules/rollback`
+- Diff view between versions for audit logging
+
+### Geo-IP Filtering
+Block or allow requests based on geographic location.
+
+- MaxMind GeoLite2/GeoIP2 database integration
+- `GeoIPFilter` with country/region/city matching
+- CEL functions: `client["ip"].country()`, `client["ip"].inCountry("US")`
+- Automatic database updates via `GeoIPUpdater`
+- Memory-mapped database for fast lookups
+- Fallback behavior for unknown IPs
+
+### SNI-Only Filtering
+Filter HTTPS by Server Name Indication without decryption.
+
+- `SNIFilter` inspects TLS ClientHello without MITM
+- Privacy-preserving: no certificate generation or content inspection
+- Useful for compliance scenarios where decryption is prohibited
+- Faster than full interception (no TLS termination)
+- Can be combined with full interception: SNI filter first, then selective MITM
+- Supports domain wildcards and regex patterns
+
+### eBPF Integration
+Kernel-level packet inspection for high-performance filtering.
+
+- XDP (eXpress Data Path) programs for early packet drops
+- TC (Traffic Control) hooks for connection tracking
+- Offload simple domain/IP blocklists to kernel for line-rate filtering
+- Userspace fallback for complex rules (CEL, regex)
+- Requires Linux 5.x+ with BPF capabilities
+- Optional feature: graceful degradation if eBPF unavailable
 
 ---
 

@@ -37,6 +37,7 @@ An HTTPS man-in-the-middle (MITM) proxy for content filtering written in Go. SWG
 - **ACME/Let's Encrypt**: Automatic certificate provisioning with HTTP-01, TLS-ALPN-01, and DNS-01 challenges
 - **DNS-01 Challenges**: Wildcard certificate support via Cloudflare, Route53, Google Cloud DNS, DigitalOcean
 - **OpenTelemetry Tracing**: Distributed tracing with W3C Trace Context propagation and OTLP exporters
+- **WebSocket Interception**: Inspect, filter, and modify WebSocket frames with message-level hooks
 - **Cross-Platform**: Runs on Linux, macOS, and Windows
 
 ## Installation
@@ -886,6 +887,47 @@ metrics.RecordRequest("GET", "https")
 metrics.RecordBlocked("ads")
 metrics.RecordRequestDuration("GET", 200, duration)
 ```
+
+### WebSocket Interception
+
+Intercept and filter WebSocket connections with message-level hooks:
+
+```go
+// Implement WebSocketHandler interface
+type MyWSHandler struct{}
+
+func (h *MyWSHandler) OnConnect(ctx context.Context, req *http.Request, resp *http.Response) error {
+    log.Printf("WebSocket connection to %s", req.Host)
+    return nil
+}
+
+func (h *MyWSHandler) OnMessage(ctx context.Context, msg *swg.WebSocketMessage) (*swg.WebSocketMessage, error) {
+    // Log all messages
+    log.Printf("[%s] %s: %d bytes", msg.Direction, swg.OpcodeString(msg.Opcode), len(msg.Payload))
+    
+    // Block messages containing sensitive data
+    if msg.Opcode == swg.OpcodeText && strings.Contains(string(msg.Payload), "secret") {
+        return nil, nil // Drop message silently
+    }
+    
+    return msg, nil // Forward message
+}
+
+func (h *MyWSHandler) OnClose(ctx context.Context, code uint16, reason string) {
+    log.Printf("WebSocket closed: %d (%s)", code, swg.CloseCodeString(code))
+}
+
+// Wire up to proxy
+proxy.WebSocketHandler = &MyWSHandler{}
+proxy.WebSocketConfig = swg.DefaultWebSocketConfig()
+```
+
+Handler return values for `OnMessage`:
+- `(msg, nil)` — Forward message (possibly modified)
+- `(nil, nil)` — Drop message silently
+- `(nil, err)` — Close connection with error
+
+When `WebSocketHandler` is nil, WebSocket connections pass through as opaque byte streams without frame inspection. See [`_examples/websocket/`](./_examples/websocket/) for a complete example.
 
 ## Architecture
 

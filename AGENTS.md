@@ -130,6 +130,8 @@ swg/
 ├── tracing_test.go     # Tests for tracing functions
 ├── cel.go              # CEL expression matchers for advanced filtering
 ├── cel_test.go         # Tests for CEL functions
+├── websocket.go        # WebSocket frame interception and filtering
+├── websocket_test.go   # Tests for WebSocket functions
 ├── config.go           # Viper-based configuration loading
 ├── config_test.go      # Tests for config functions
 ├── .goreleaser.yaml    # GoReleaser configuration
@@ -148,7 +150,8 @@ swg/
 │   ├── bypass/         # Bypass token for debugging
 │   ├── acme/           # ACME/Let's Encrypt certificates
 │   ├── dns01/          # DNS-01 ACME challenge for wildcard certs
-│   └── cel/            # CEL expression matchers for advanced filtering
+│   ├── cel/            # CEL expression matchers for advanced filtering
+│   └── websocket/      # WebSocket interception and filtering
 ├── deploy/
 │   ├── kubernetes/     # Raw K8s manifests
 │   └── helm/swg/       # Helm chart
@@ -430,6 +433,40 @@ Request body size limiting middleware:
 - Wraps request body with limiting reader for streaming validation
 - Per-path limits override global limit
 - Integrates with PolicyEngine via `RequestHook` interface
+
+### `WebSocketInterceptor` (websocket.go)
+WebSocket frame interception and filtering:
+- `IsWebSocketUpgrade(req)` - Detect WebSocket upgrade requests
+- `NewWebSocketInterceptor(handler, config)` - Create interceptor with handler and config
+- `DefaultWebSocketConfig()` - Sensible defaults (16 MiB max, 60s timeouts)
+- `CloseCodeString(code)` - Human-readable close code descriptions
+
+**WebSocketHandler Interface:**
+- `OnConnect(ctx, req, resp)` - Called after successful WebSocket handshake
+- `OnMessage(ctx, msg)` - Called for each message, return modified/nil to forward/drop
+- `OnClose(ctx, code, reason)` - Called when connection closes
+
+**WebSocketMessage Fields:**
+- `Opcode` - Frame type (text, binary, close, ping, pong)
+- `Payload` - Message data
+- `Direction` - `ClientToServer` or `ServerToClient`
+- `Timestamp` - When message was received
+
+**WebSocketConfig Fields:**
+- `MaxMessageSize` - Maximum message size (default: 16 MiB)
+- `ReadTimeout` - Read deadline per frame (default: 60s)
+- `WriteTimeout` - Write deadline per frame (default: 60s)
+- `PingInterval` - Keepalive ping interval (default: 30s)
+
+**Proxy Integration:**
+- `Proxy.WebSocketHandler` - Handler for WebSocket connections (optional, nil = passthrough)
+- `Proxy.WebSocketConfig` - Configuration for WebSocket handling
+
+**Behavior:**
+- When `WebSocketHandler` is nil, WebSocket connections pass through as opaque streams
+- When set, frames are parsed and passed through handler hooks
+- Automatic ping/pong handling for connection keepalive
+- Message defragmentation for continuation frames
 
 ### `PACGenerator` (pac.go)
 - `NewPACGenerator(proxyAddr)` - Create PAC generator with defaults
